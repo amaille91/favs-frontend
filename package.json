@@ -1,0 +1,19 @@
+{
+  "name": "favs-frontend",
+  "version": "1.0.0",
+  "description": "favs-frontend",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "start": "node dev/proxy-server.js",
+    "test": "spago test"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "express": "^4.18.1",
+    "http-proxy-middleware": "^2.0.6"
+  }
+}
