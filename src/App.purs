@@ -2,16 +2,24 @@ module App where
 
 import Prelude
 
+import Data.Maybe (Maybe)
+import Data.List.Types (List)
+
 import Halogen as H
 import Halogen.HTML as HH
-import Halogen.HTML.Events as HE
-import Halogen.HTML.Properties as HP
+-- import Halogen.HTML.Events as HE
+-- import Halogen.HTML.Properties as HP
 
-type State = { enabled :: Boolean }
+
+type State = Maybe { notes :: List Note }
+type Note = { name :: String }
+
+-- instance Show Note where
+--   show _ = "Note"
 
 data Action = Toggle
 
-component :: forall q i o m. H.Component q i o m
+component :: forall q o m. H.Component q State o m
 component =
   H.mkComponent
     { initialState
@@ -19,21 +27,16 @@ component =
     , eval: H.mkEval $ H.defaultEval { handleAction = handleAction }
     }
 
-initialState :: forall i. i -> State
-initialState _ = { enabled: false }
+initialState :: State -> State
+initialState = identity
 
 render :: forall m. State -> H.ComponentHTML Action () m
 render state =
-  let
-    label = if state.enabled then "On" else "Off"
-  in
-    HH.button
-      [ HP.title label
-      , HE.onClick \_ -> Toggle
-      ]
-      [ HH.text label ]
+  HH.div
+    []
+    [ HH.text $ show state ]
 
 handleAction :: forall o m. Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of
   Toggle ->
-    H.modify_ \st -> st { enabled = not st.enabled }
+    H.modify_ \st -> st
