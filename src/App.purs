@@ -12,7 +12,8 @@ import Halogen.HTML as HH
 
 
 type State = Maybe { notes :: List Note }
-type Note = { name :: String }
+type Note = { content :: { noteContent :: String, title :: String }
+            , storageId :: { version :: String, id :: String } }
 
 -- instance Show Note where
 --   show _ = "Note"

@@ -12,7 +12,8 @@ to generate this file without the comments in this block.
 -}
 { name = "my-project"
 , dependencies =
-  [ "affjax"
+  [ "aff"
+  , "affjax"
   , "affjax-web"
   , "argonaut-core"
   , "codec-argonaut"

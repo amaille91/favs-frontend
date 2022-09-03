@@ -7,7 +7,9 @@
     "test": "test"
   },
   "scripts": {
-    "start": "node dev/proxy-server.js",
+    "build": "spago bundle-app --to static/index.js",
+    "start-dev": "node dev/proxy-server.js",
+    "start-dev-proxy-prod": "node dev/proxy-server-prod.js",
     "test": "spago test"
   },
   "author": "",

@@ -3,7 +3,8 @@ const express = require('express');
 const app = express();
 
 app.use('/api', createProxyMiddleware({
-  target: 'http://localhot:8081',
+  target: 'https://ns328297.ip-37-187-113.eu/',
+  changeOrigin: true,
   pathRewrite: {'^/api': ''}
 }));
 app.use(express.static('static'));
