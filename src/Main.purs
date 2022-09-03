@@ -3,13 +3,11 @@ module Main where
 import Prelude
 
 import Data.Maybe (Maybe(Just, Nothing))
-import Data.Either (Either(Left, Right), either)
-import Data.List.Types (List)
+import Data.Either (Either, either)
 
 import Data.Argonaut.Core as Json
 import Data.Codec.Argonaut as Codec
 import Data.Codec.Argonaut.Record (object)
-import Data.List (fromFoldable)
 
 import Effect (Effect)
 import Effect.Class (liftEffect)
@@ -28,22 +26,16 @@ main :: Effect Unit
 main = HA.runHalogenAff do
   body <- HA.awaitBody
 
-  eitherResp <- get json "/api/note"
-
-  initialNotes :: Maybe (List App.Note) <- case eitherResp of
-    Left _ -> pure Nothing
-    Right resp ->  either logError (\r -> pure (Just r)) $ fromFoldable <$> decodeNotes resp.body
-
-  liftEffect $ logShow initialNotes
-  liftEffect $ logShow "notes shown"
+  initialNotes :: Maybe (Array App.Note) <- get json "/api/note" >>= either (const $ pure Nothing)
+                                                                     (_.body >>> decodeNotesResponse)
 
   case initialNotes of
-    Nothing -> runUI App.component Nothing body
-    Just notes -> runUI App.component (Just { notes: notes }) body
+    Nothing -> runUI App.component [] body
+    Just notes -> runUI App.component notes body
 
 notesCodec :: Codec.JsonCodec (Array App.Note)
 notesCodec = Codec.array $ object "Note" { content: object "content" { noteContent: Codec.string, title: Codec.string }
-                                         , storageId: object "storageId" { version: Codec.string, id: Codec.string } }
+                                         , storageId: object "storageId" { versio: Codec.string, id: Codec.string } }
 
 encodeNotes :: Array App.Note -> String
 encodeNotes notes = Json.stringify (Codec.encode notesCodec notes)
@@ -51,7 +43,14 @@ encodeNotes notes = Json.stringify (Codec.encode notesCodec notes)
 decodeNotes :: Json.Json -> Either Codec.JsonDecodeError (Array App.Note)
 decodeNotes toDecode = Codec.decode notesCodec toDecode
 
-logError :: Codec.JsonDecodeError -> Aff (Maybe (List App.Note))
-logError e = do
-  liftEffect $ logShow e
-  pure Nothing
+decodeNotesResponse :: Json.Json -> Aff (Maybe (Array App.Note))
+decodeNotesResponse = decodeNotes >>> either (logError >=>| pure Nothing) (Just >>> pure)
+
+logError :: Codec.JsonDecodeError -> Aff Unit
+logError = liftEffect <<< logShow
+
+composeBindsIgnoringResult :: forall a b c m. Bind m => (a -> m b) -> m c -> a -> m c
+composeBindsIgnoringResult f r i = f i >>= (const r)
+
+
+infixr 1 composeBindsIgnoringResult as >=>|

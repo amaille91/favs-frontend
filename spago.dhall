@@ -16,13 +16,14 @@ to generate this file without the comments in this block.
   , "affjax"
   , "affjax-web"
   , "argonaut-core"
+  , "arrays"
   , "codec-argonaut"
   , "console"
   , "effect"
   , "either"
   , "halogen"
-  , "lists"
   , "maybe"
+  , "newtype"
   , "prelude"
   ]
 , packages = ./packages.dhall
