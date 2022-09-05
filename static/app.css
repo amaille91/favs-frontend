@@ -1,0 +1,52 @@
+html, body, main {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  font-size: 1.2em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  text-align: center;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+h1 {
+  font-size: 2rem;
+}
+
+.tabs {
+  border-bottom: 1px solid #dee2e6;
+  display: flex;
+}
+
+.tabs .tab {
+  text-align: center;
+  flex: 1 1 auto;
+}
+
+.tabs .tab-link {
+  border: 1px solid transparent;
+  border-top-left-radius: .25rem;
+  border-top-right-radius: .25rem;
+			}
+
+.tab-link {
+  display: block;
+  padding: .5rem 1rem;
+}
+
+.tabs .tab-link.active {
+  color: #495057;
+  border-color: #dee2e6 #dee2e6 #fff;
+}
+
+
+.notes h2 {
+  text-align: left;
+}

@@ -35,7 +35,7 @@ main = HA.runHalogenAff do
 
 notesCodec :: Codec.JsonCodec (Array App.Note)
 notesCodec = Codec.array $ object "Note" { content: object "content" { noteContent: Codec.string, title: Codec.string }
-                                         , storageId: object "storageId" { versio: Codec.string, id: Codec.string } }
+                                         , storageId: object "storageId" { version: Codec.string, id: Codec.string } }
 
 encodeNotes :: Array App.Note -> String
 encodeNotes notes = Json.stringify (Codec.encode notesCodec notes)
