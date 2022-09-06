@@ -46,7 +46,21 @@ h1 {
   border-color: #dee2e6 #dee2e6 #fff;
 }
 
+.notes {
+  display: -ms-flexbox;
+  display: flex;
+  -ms-flex-direction: column;
+  flex-direction: column;
+  border-radius: .25rem;
+}
 
 .notes h2 {
   text-align: left;
+}
+
+.note {
+  position: relative;
+  width: 100%;
+  padding: .75rem 1.25rem;
+  border: 1px solid rgba(0,0,0,.125);
 }
