@@ -8,6 +8,7 @@ html, body, main {
   font-size: 1.2em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color: #212529;
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -46,21 +47,61 @@ h1 {
   border-color: #dee2e6 #dee2e6 #fff;
 }
 
+.bottom-bar {
+  height: 10vh;
+  width: 100%;
+  position: fixed;
+  bottom: 0;
+  display: flex;
+  flex-direction: row-reverse;
+  background-color: #fff;
+  border: 1px solid rgba(0,0,0,.125);
+}
+
+.bottom-bar > * {
+  position: relative;
+  width: 44px;
+  width: 10vh;
+}
+
+.bottom-bar > button {
+  color: #fff;
+  background-color: #007bff;
+  border-color: #007bff;
+}
+
 .notes {
   display: -ms-flexbox;
   display: flex;
   -ms-flex-direction: column;
   flex-direction: column;
   border-radius: .25rem;
+  margin-bottom: 30vh;
+}
+
+.btn {
+  display: inline-block;
+  font-weight: 400;
+  text-align: center;
+  white-space: nowrap;
+  vertical-align: middle;
+  cursor: pointer;
+  border: 1px solid transparent;
+  padding: 6px 12px;
+  font-size: 14px;
+  line-height: 1.42857143;
+  border-radius: 4px;
+  color: #fff;
+  background-color: #286090;
+  border-color: #204d74;
 }
 
 .notes h2 {
   text-align: left;
 }
 
-.note {
+.note, .new-note {
   position: relative;
-  width: 100%;
   padding: .75rem 1.25rem;
   border: 1px solid rgba(0,0,0,.125);
 }

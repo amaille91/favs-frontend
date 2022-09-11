@@ -52,5 +52,4 @@ logError = liftEffect <<< logShow
 composeBindsIgnoringResult :: forall a b c m. Bind m => (a -> m b) -> m c -> a -> m c
 composeBindsIgnoringResult f r i = f i >>= (const r)
 
-
 infixr 1 composeBindsIgnoringResult as >=>|

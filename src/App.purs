@@ -2,23 +2,28 @@ module App where
 
 import Prelude hiding (div)
 
+import Data.Array (null, concat)
+import Data.Maybe (Maybe(Nothing), maybe)
 import Data.Newtype (wrap)
-import Data.Array (null)
-import Data.String.Common (split)
-import Data.String.Pattern (Pattern(Pattern))
+import Data.String (Pattern(Pattern), null, split) as Str
+import Effect.Aff (Aff)
 
 import Halogen (Component, ComponentHTML, HalogenM, modify_, mkComponent, mkEval, defaultEval) as H
-import Halogen.HTML (HTML, h1, h2, div, span, section, nav, text)
--- import Halogen.HTML.Events as HE
+import Halogen.HTML (HTML, button, div, h1, h2, li, nav, section, span, text)
+import Halogen.HTML.Events (onClick)
 import Halogen.HTML.Properties as Properties
 
-type State = Array Note
-type Note = { content :: { noteContent :: String, title :: String }
+type State = { notes :: Array Note
+             , newNote :: Maybe NoteContent }
+
+type Note = { content :: NoteContent
             , storageId :: { version :: String, id :: String } }
 
-data Action = Toggle
+type NoteContent = { noteContent :: String, title :: String }
 
-component :: forall q o m. H.Component q State o m
+data Action = NewNote
+
+component :: forall q o. H.Component q (Array Note) o Aff
 component =
   H.mkComponent
     { initialState
@@ -26,8 +31,8 @@ component =
     , eval: H.mkEval $ H.defaultEval { handleAction = handleAction }
     }
 
-initialState :: State -> State
-initialState = identity
+initialState :: Array Note -> State
+initialState notes = { notes: notes, newNote: Nothing }
 
 render :: forall m. State -> H.ComponentHTML Action () m
 render state =
@@ -36,28 +41,38 @@ render state =
       [ h1 [] [ text "FAVS" ] 
       , nav [ classes "tabs" ] [ tab ]
       ]
-    , section [ classes "notes" ] (if (null state) then noNotesDiv else (map noteRender state))
-    ]
+    , section [ classes "notes" ] (concat [notesRender state.notes, maybe [] (newNoteRender >>> pure) state.newNote])
+    , nav [ classes "bottom-bar" ] [ button [ classes "btn", onClick (\_ -> NewNote) ] [ text "+" ]
+    ]    ]
 
 tab :: forall w i. HTML w i
 tab =
   div [ classes "tab" ]
       [ span [ classes "tab-link active" ] [ text "Notes" ] ]
 
+notesRender :: forall w i. Array Note -> Array (HTML w i)
+notesRender notes = (if (null notes) then noNotesDiv else (map noteRender notes))
+
+newNoteRender :: forall w i. NoteContent -> HTML w i
+newNoteRender content =
+  li [ classes "new-note" ]
+     [ h2 [] [ text (if (Str.null content.title) then "New title" else content.title) ]
+     , div [] [ text (if (Str.null content.noteContent) then "New content" else content.noteContent)] ]
+
 noNotesDiv :: forall w i. Array (HTML w i)
 noNotesDiv = [ div [] [ text "There are no notes to display" ] ]
 
 noteRender :: forall w i. Note -> HTML w i
 noteRender note =
-  div [ classes "note" ]
+  li [ classes "note" ]
     [ h2 [] [ text note.content.title ]
     , div [] [ text note.content.noteContent ]
     ]
 
-handleAction :: forall o m. Action -> H.HalogenM State Action () o m Unit
+handleAction :: forall o. Action -> H.HalogenM State Action () o Aff Unit
 handleAction = case _ of
-  Toggle ->
-    H.modify_ \st -> st
+  NewNote -> 
+    H.modify_ \st -> st { newNote = pure { noteContent: "", title: "" } }
 
 classes :: forall r i. String -> Properties.IProp (class :: String | r) i
-classes = split (Pattern " ") >>> (map wrap) >>> Properties.classes
+classes = Str.split (Str.Pattern " ") >>> (map wrap) >>> Properties.classes
