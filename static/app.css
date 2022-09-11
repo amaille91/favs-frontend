@@ -11,7 +11,12 @@ html, body, main {
   color: #212529;
 }
 
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2, h2 > input
+h3, 
+h4,
+h5,
+h6 {
   text-align: center;
   font-weight: 500;
   line-height: 1.2;
@@ -70,6 +75,11 @@ h1 {
   border-color: #007bff;
 }
 
+[contenteditable]:focus-visible {
+  border: 1px solid rgba(0,0,0,.125);
+  outline: 2px solid #286090;
+}
+
 .notes {
   display: -ms-flexbox;
   display: flex;
@@ -104,4 +114,12 @@ h1 {
   position: relative;
   padding: .75rem 1.25rem;
   border: 1px solid rgba(0,0,0,.125);
+}
+
+.new-note > * {
+  display: flex;
+}
+
+.new-note > *:focus-visible {
+  max-width: 75%;
 }
