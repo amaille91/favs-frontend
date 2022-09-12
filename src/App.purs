@@ -2,41 +2,31 @@ module App where
 
 import Prelude hiding (div)
 
-import Affjax.RequestBody (RequestBody(..))
-import Data.Array (null, concat)
-import Data.Maybe (Maybe(Nothing), maybe)
+import Data.Array (snoc, null)
+import Data.Maybe (Maybe(Nothing))
 import Data.Newtype (wrap)
 import Data.String (Pattern(Pattern), null, split) as Str
 import Effect.Aff (Aff)
+import Effect.Class (liftEffect)
+import Effect.Console (logShow)
 import Halogen (Component, ComponentHTML, HalogenM, modify_, mkComponent, mkEval, defaultEval) as H
-import Halogen.HTML (HTML, attr, button, div, h1, h2, input, li, nav, section, span, text)
-import Halogen.HTML.Events (onClick)
-import Halogen.HTML.Properties (InputType(InputText), placeholder, type_)
+import Halogen.HTML (HTML, attr, button, div, h1, h2, li, nav, section, span, text)
+import Halogen.HTML.Events (onBlur, onClick)
+import Halogen.HTML.Properties (IProp)
 import Halogen.HTML.Properties as Properties
+import Web.UIEvent.FocusEvent (FocusEvent)
 
-type State = { notes        :: Array Note
-             , newNote      :: Maybe NoteContent
-             , editingState :: EditingState
-             }
+type State = { notes        :: Array Note }
 
 type Note = { content :: NoteContent
-            , storageId :: { version :: String, id :: String } }
+            , storageId :: NoteId }
 
+type NoteId = Maybe { version :: String, id :: String }
+             -- ^ The Nothing value represents the id of the NewNote
 type NoteContent = { noteContent :: String, title :: String }
 
-type EditingState = Maybe EditingNewNoteState
-data EditingNewNoteState = EditingNewNoteTitle
-                         | EditingNewNoteContent
-
-editingNewNoteContent :: EditingNewNoteState -> Boolean
-editingNewNoteContent EditingNewNoteTitle   = false
-editingNewNoteContent EditingNewNoteContent = true
-
-editingNewNoteTitle :: EditingNewNoteState -> Boolean
-editingNewNoteTitle EditingNewNoteTitle   = true
-editingNewNoteTitle EditingNewNoteContent = false
-
 data Action = NewNote
+            | SaveNote NoteId
 
 component :: forall q o. H.Component q (Array Note) o Aff
 component =
@@ -47,47 +37,58 @@ component =
     }
 
 initialState :: Array Note -> State
-initialState notes = { notes: notes, newNote: Nothing, editingState: Nothing }
+initialState notes = { notes: notes }
 
 render :: forall m. State -> H.ComponentHTML Action () m
 render state =
   div [] 
     [ section [classes "top-bar"] $
-      [ h1 [] [ text "FAVS" ] 
-      , nav [ classes "tabs" ] [ tab ]
-      ]
-    , section [ classes "notes" ] (concat [notesRender state.notes, maybe [] (newNoteRender >>> pure) state.newNote])
-    , nav [ classes "bottom-bar" ] [ button [ classes "btn", onClick (\_ -> NewNote) ] [ text "+" ]
-    ]    ]
+        [ h1 [] [ text "FAVS" ] 
+        , nav [ classes "tabs" ] [ tab ]
+        ]
+    , section [ classes "notes" ]
+        (snoc (notesRender state.notes) newNoteRender)
+    , nav [ classes "bottom-bar" ]
+        [ button [ classes "btn", onClick (\_ -> NewNote) ] [ text "+" ] ]
+    ]
 
 tab :: forall w i. HTML w i
 tab =
   div [ classes "tab" ]
       [ span [ classes "tab-link active" ] [ text "Notes" ] ]
 
-notesRender :: forall w i. Array Note -> Array (HTML w i)
+notesRender :: forall w. Array Note -> Array (HTML w Action)
 notesRender notes = (if (null notes) then noNotesDiv else (map noteRender notes))
-
-newNoteRender :: forall w i. NoteContent -> HTML w i
-newNoteRender content =
-  li [ classes "new-note" ]
-     [ h2 [ attr (wrap "contenteditable") "" ] [ text $ maybeStr "What's your new title?" content.title ]
-     , div [ attr (wrap "contenteditable") "" ] [ text $ maybeStr "What's your new content?" content.noteContent ] ]
 
 noNotesDiv :: forall w i. Array (HTML w i)
 noNotesDiv = [ div [] [ text "There are no notes to display" ] ]
 
-noteRender :: forall w i. Note -> HTML w i
+noteRender :: forall w. Note -> HTML w Action
 noteRender note =
   li [ classes "note" ]
-    [ h2 [] [ text note.content.title ]
-    , div [] [ text note.content.noteContent ]
+    [ h2  [ contenteditable, saveOnBlur note.storageId ] [ text note.content.title       ]
+    , div [ contenteditable, saveOnBlur note.storageId ] [ text note.content.noteContent ]
     ]
+
+newNoteRender :: forall w. HTML w Action
+newNoteRender =
+  li [ classes "new-note" ]
+     [ h2  [ contenteditable, saveOnBlur Nothing ] [ text "What's your new title?"   ]
+     , div [ contenteditable, saveOnBlur Nothing ] [ text "What's your new content?" ]
+     ]
 
 handleAction :: forall o. Action -> H.HalogenM State Action () o Aff Unit
 handleAction = case _ of
   NewNote -> 
-    H.modify_ \st -> st { newNote = pure { noteContent: "", title: "" } }
+    H.modify_ \st -> st { notes = snoc st.notes { storageId: Nothing
+                                                , content: { title: "What's your new content?", noteContent: "" } } }
+  SaveNote id -> liftEffect $ logShow id
+
+contenteditable :: forall r i. IProp r i
+contenteditable = attr (wrap "contenteditable") ""
+
+saveOnBlur :: forall r. NoteId -> IProp (onBlur :: FocusEvent | r) Action
+saveOnBlur id = onBlur $ const $ SaveNote id
 
 classes :: forall r i. String -> Properties.IProp (class :: String | r) i
 classes = Str.split (Str.Pattern " ") >>> (map wrap) >>> Properties.classes
