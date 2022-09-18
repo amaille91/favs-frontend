@@ -26,6 +26,9 @@ to generate this file without the comments in this block.
   , "newtype"
   , "prelude"
   , "strings"
+  , "transformers"
+  , "web-dom"
+  , "web-events"
   , "web-uievents"
   ]
 , packages = ./packages.dhall
