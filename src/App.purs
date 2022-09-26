@@ -1,16 +1,24 @@
-module App where
+module App (decodeNotesResponse) where
 
 import Prelude hiding (div)
 
+import Affjax (Error(..), printError)
+import Affjax.ResponseFormat (json)
+import Affjax.Web (Response, post, put)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.RWS (gets, modify_)
-import Data.Array (head, mapWithIndex, modifyAt, null, snoc)
-import Data.Either (either, note)
+import Data.Argonaut.Core as Json
+import Data.Array (head, index, length, mapWithIndex, modifyAt, null, snoc)
+import Data.Codec.Argonaut (JsonDecodeError)
+import Data.Codec.Argonaut as Codec
+import Data.Codec.Argonaut.Record (object)
+import Data.Either (Either, either, note)
 import Data.Maybe (Maybe(Nothing), maybe)
 import Data.Newtype (wrap)
 import Data.String (Pattern(Pattern), null, split) as Str
 import Effect (Effect)
 import Effect.Aff (Aff)
+import Effect.Aff.Class (liftAff)
 import Effect.Class (liftEffect)
 import Effect.Class.Console (log)
 import Halogen (Component, ComponentHTML, HalogenM, modify_, mkComponent, mkEval, defaultEval) as H
@@ -22,6 +30,7 @@ import Web.DOM.Element (fromEventTarget, toNode)
 import Web.DOM.Node (childNodes, nodeValue)
 import Web.DOM.NodeList (item)
 import Web.Event.Event (target)
+import Web.HTML.Event.EventTypes (offline)
 import Web.UIEvent.FocusEvent (FocusEvent, toEvent)
 
 type State = { notes :: Array Note
@@ -31,13 +40,44 @@ type State = { notes :: Array Note
 data EditingState = None
                   | EditingNoteTitle Int
                   | EditingNoteContent Int
+type ServerNote = { content   :: NoteContent
+                  , storageId :: { version :: String, id :: String }
+                  }
 
-type Note = { content :: NoteContent
+type Note = { content   :: NoteContent
             , storageId :: NoteId }
 
 type NoteId = Maybe { version :: String, id :: String }
              -- ^ The Nothing value represents the id of the NewNote
 type NoteContent = { noteContent :: String, title :: String }
+
+toNote :: ServerNote -> Note
+toNote serverNote = serverNote { storageId = pure serverNote.storageId }
+
+toServerNote :: Note -> Maybe ServerNote
+toServerNote { content, storageId } = storageId <#> (\s -> { content: content, storageId: s })
+
+serverNoteCodec :: Codec.JsonCodec ServerNote
+serverNoteCodec = object "ServerNote" { content: object "content" { noteContent: Codec.string, title: Codec.string }
+                                      , storageId: object "storageId" { version: Codec.string, id: Codec.string }
+                                      }
+
+notesCodec :: Codec.JsonCodec (Array ServerNote)
+notesCodec = Codec.array $ serverNoteCodec
+
+encodeNotes :: Array ServerNote -> String
+encodeNotes notes = Json.stringify (Codec.encode notesCodec notes)
+
+decodeNotes :: Json.Json -> Either Codec.JsonDecodeError (Array ServerNote)
+decodeNotes toDecode = Codec.decode notesCodec toDecode
+
+decodeNotesResponse :: forall a. (JsonDecodeError -> Aff a) -> Json.Json -> Aff (Maybe (Array ServerNote))
+decodeNotesResponse onError = decodeNotes >>> either (onError >=>| pure Nothing) (pure >>> pure)
+
+composeBindsIgnoringResult :: forall a b c m. Bind m => (a -> m b) -> m c -> a -> m c
+composeBindsIgnoringResult f r i = f i >>= (const r)
+
+infixr 1 composeBindsIgnoringResult as >=>|
 
 data Action = NewNote
             | EditNoteTitle Int
@@ -113,18 +153,19 @@ handleAction :: forall o. Action -> H.HalogenM State Action () o Aff Unit
 handleAction = case _ of
   NewNote -> 
     H.modify_ \st -> st { notes = snoc st.notes { storageId: Nothing
-                                                , content: { title: "What's your new content?", noteContent: "" } } }
+                                                , content: { title: "What's your new content?", noteContent: "" } } 
+                        , editingState = EditingNoteTitle (length st.notes)}
   EditNoteTitle idx ->
     modify_ \st -> st { editingState = EditingNoteTitle idx }
   EditNoteContent idx ->
     modify_ \st -> st { editingState = EditingNoteContent idx }
   NoteTitleChanged idx newTitle -> do
     oldNotes <- gets _.notes
-    let maybeNewNotes = modifyAt idx (\n -> n { content = n.content { title = newTitle }}) oldNotes
-    maybe (liftEffect $ log  $ "ERROR: unable to find note with index " <> show idx <> " while trying to update its title")
-          (\newNotes -> modify_ \st -> st { notes = newNotes })
-          maybeNewNotes
-    modify_ \st -> st { editingState = None }
+    let
+      newNote = index oldNotes idx >>= (\note -> pure $ note { content = note.content { title = newTitle } })
+    maybe (log $ "Unable to modify note at index " <> show idx <> ": note cannot be found in model")
+          postNote
+          newNote
   NoteContentChanged idx newContent -> do
     oldNotes <- gets _.notes
     let maybeNewNotes = modifyAt idx (\n -> n { content = n.content { noteContent = newContent }}) oldNotes
@@ -147,6 +188,27 @@ handleAction = case _ of
         node <- toNode <$> (hoistToExceptT "no element for target" $ fromEventTarget tg)
         childNode <- wrap $ childNodes node >>= item 0 >>= (note "no child node" >>> pure)
         wrap $ note "no value in child node" <$> nodeValue childNode
+
+fromServerNote :: ServerNote -> Note
+fromServerNote { storageId, content } = { storageId: pure storageId, content: content }
+
+handlePostNoteResponse :: forall o. Response ServerNote -> H.HalogenM State Action () o Aff Unit
+handlePostNoteResponse { body } = do pure unit
+
+--let maybeNewNotes = modifyAt idx (\n -> n { content = n.content { title = newTitle }}) oldNotes
+--maybe (liftEffect $ log  $ "ERROR: unable to find note with index " <> show idx <> " while trying to update its title")
+--      (\newNotes -> modify_ \st -> st { notes = newNotes })
+--      maybeNewNotes
+postNote :: forall o. Note -> H.HalogenM State Action () o Aff Unit
+postNote newNote = do
+    resp <- liftAff $ put json "/api/note" (encode notesCodec <$> toServerNote newNote)
+    either handleError
+           handlePostNoteResponse
+           resp
+    modify_ \st -> st { editingState = None }
+
+handleError :: forall o. Error -> H.HalogenM State Action () o Aff Unit
+handleError = liftAff <<< log <<< printError
 
 contenteditable :: forall r i. IProp r i
 contenteditable = attr (wrap "contenteditable") ""
