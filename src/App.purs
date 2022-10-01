@@ -5,12 +5,12 @@ import Prelude hiding (div)
 import Affjax (Error, printError)
 import Affjax.RequestBody (RequestBody(..))
 import Affjax.ResponseFormat (json)
-import Affjax.Web (Response, get, post)
+import Affjax.Web (Response, get, post, put)
 import Control.Monad.RWS (gets, modify_)
 import Data.Argonaut.Core (Json, jsonEmptyObject)
 import Data.Argonaut.Decode (class DecodeJson, JsonDecodeError, decodeJson, (.:))
 import Data.Argonaut.Encode (class EncodeJson, encodeJson, (:=), (~>))
-import Data.Array (index, length, mapWithIndex, modifyAt, null, snoc)
+import Data.Array (index, length, mapWithIndex, null, snoc)
 import Data.Either (Either, either)
 import Data.Generic.Rep (class Generic)
 import Data.Lens (Lens', lens, lens', (.~), (^.))
@@ -114,8 +114,8 @@ type StorageId = { version :: String, id :: String }
 
 data Action = CreateNewNote
             | EditNoteTitle Int
-            | NoteTitleChanged Int String
-            | NoteContentChanged Int String
+            | NoteTitleChanged Int Note String
+            | NoteContentChanged Int Note String
             | EditDone
             | EditNoteContent Int
 
@@ -160,21 +160,21 @@ noNotesDiv = [ div [] [ text "There are no notes to display" ] ]
 noteRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteRender editingState idx note =
   li [ classes "note" ]
-    [ noteTitleRender editingState idx (note ^. _content)
-    , noteContentRender editingState idx (note ^. _content)
+    [ noteTitleRender editingState idx note
+    , noteContentRender editingState idx note
     ]
 
-noteContentRender :: forall w. EditingState -> Int -> NoteContent -> HTML w Action
+noteContentRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteContentRender (EditingNoteContent editIdx) idx note
-  | editIdx == idx = textarea [ onBlur (const EditDone), onValueChange  $ NoteContentChanged idx, value note.noteContent ]
-  | otherwise = div [ onClick (const $ EditNoteContent idx) ] [ text note.noteContent ]
-noteContentRender _ idx note = div [ onClick (const $ EditNoteContent idx) ] [ text note.noteContent ]
+  | editIdx == idx = textarea [ onBlur (const EditDone), onValueChange  $ NoteContentChanged idx note, value (note ^. _noteContent) ]
+  | otherwise = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
+noteContentRender _ idx note = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
 
-noteTitleRender :: forall w. EditingState -> Int -> NoteContent -> HTML w Action
+noteTitleRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteTitleRender (EditingNoteTitle editIdx) idx note
-  | editIdx == idx = input [ onBlur (const EditDone), onValueChange  $ NoteTitleChanged idx, value note.title ]
-  | otherwise = h2  [ onClick (const $ EditNoteTitle idx) ] [ text note.title ]
-noteTitleRender _ idx note = h2  [ onClick (const $ EditNoteTitle idx) ] [ text note.title ]
+  | editIdx == idx = input [ onBlur (const EditDone), onValueChange  $ NoteTitleChanged idx note, value (note ^. _title)]
+  | otherwise = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title)]
+noteTitleRender _ idx note = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title)]
 
 handleAction :: forall o. Action -> H.HalogenM State Action () o Aff Unit
 handleAction = case _ of
@@ -185,28 +185,28 @@ handleAction = case _ of
     modify_ \st -> st { editingState = EditingNoteTitle idx }
   EditNoteContent idx ->
     modify_ \st -> st { editingState = EditingNoteContent idx }
-  NoteTitleChanged idx newTitle -> do
-    oldNotes <- gets _.notes
-    liftEffect $ log "old notes gotten"
-    let
-      modifiedNote = index (snoc oldNotes newNote) idx >>= ((_title .~ newTitle) >>> pure)
-    liftEffect $ log $ "New note: " <> show modifiedNote
-    maybe (log $ "Unable to modify note at index " <> show idx <> ": note cannot be found in model")
-          postNote
-          modifiedNote
-  NoteContentChanged idx newContent -> do
-    oldNotes <- gets _.notes
-    let maybeNewNotes = modifyAt idx (_noteContent .~ newContent) oldNotes
-    maybe (liftEffect $ log  $ "ERROR: unable to find note with index " <> show idx <> " while trying to update its content")
-          (\newNotes -> modify_ \st -> st { notes = newNotes })
-          maybeNewNotes
-    modify_ \st -> st { editingState = None }
+  NoteTitleChanged idx note newTitle -> updateNoteWithSaveAndRefreshNotes _title idx note newTitle
+  NoteContentChanged idx note newContent -> updateNoteWithSaveAndRefreshNotes _noteContent idx note newContent
   EditDone -> do 
     liftEffect $ log "Edit Done"
     modify_ \st -> st { editingState = None }
 
-handlePostNoteResponse :: forall o. Response Json -> H.HalogenM State Action () o Aff Unit
-handlePostNoteResponse resp = do
+
+updateNoteWithSaveAndRefreshNotes :: forall a o. Lens' Note a -> Int -> Note -> a -> H.HalogenM State Action () o Aff Unit
+updateNoteWithSaveAndRefreshNotes lens_ idx note newVal = do
+  oldNotes <- gets _.notes
+  liftEffect $ log "old notes gotten"
+  let
+    modifiedNote = index (snoc oldNotes newNote) idx >>= ((lens_ .~ newVal) >>> pure)
+  liftEffect $ log $ "New note: " <> show modifiedNote
+  maybe (log $ "Unable to modify note at index " <> show idx <> ": note cannot be found in model")
+        (case note of
+          NewNote _ -> postNote
+          ServerNote _ -> putNote)
+        modifiedNote
+
+checkStatusAndGetNotes :: forall o. Response Json -> H.HalogenM State Action () o Aff Unit
+checkStatusAndGetNotes resp = do
   if unwrap resp.status >= 300 || unwrap resp.status < 200
     then liftEffect $ log $ "Wrong status response for post note: " <> show resp.status
     else do
@@ -218,15 +218,19 @@ handlePostNoteResponse resp = do
                       notesjson)
              (decodeJson <$> _.body <$> notesResp)                                                 
 
---let maybeNewNotes = modifyAt idx (\n -> n { content = n.content { title = newTitle }}) oldNotes
---maybe (liftEffect $ log  $ "ERROR: unable to find note with index " <> show idx <> " while trying to update its title")
---      (\newNotes -> modify_ \st -> st { notes = newNotes })
---      maybeNewNotes
 postNote :: forall o. Note -> H.HalogenM State Action () o Aff Unit
 postNote note = do
     resp <- liftAff $ post json "/api/note" ((pure <<< Json <<< encodeJson) note)
     either handleError
-           handlePostNoteResponse
+           checkStatusAndGetNotes
+           resp -- /!\ errors in call are not handled here. We should handle all non 2XX responses
+    modify_ \st -> st { editingState = None }
+
+putNote :: forall o. Note -> H.HalogenM State Action () o Aff Unit
+putNote note = do
+    resp <- liftAff $ put json "/api/note" ((pure <<< Json <<< encodeJson) note)
+    either handleError
+           checkStatusAndGetNotes
            resp -- /!\ errors in call are not handled here. We should handle all non 2XX responses
     modify_ \st -> st { editingState = None }
 
