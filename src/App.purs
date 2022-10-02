@@ -6,11 +6,15 @@ import Affjax (Error, printError)
 import Affjax.RequestBody (RequestBody(..))
 import Affjax.ResponseFormat (json)
 import Affjax.Web (Response, get, post, put)
+import Control.Monad.Error.Class (throwError)
+import Control.Monad.Except (ExceptT(..), runExceptT, withExceptT)
 import Control.Monad.RWS (gets, modify_)
+import Control.Monad.Trans.Class (lift)
 import Data.Argonaut.Core (Json, jsonEmptyObject)
 import Data.Argonaut.Decode (class DecodeJson, JsonDecodeError, decodeJson, (.:))
 import Data.Argonaut.Encode (class EncodeJson, encodeJson, (:=), (~>))
 import Data.Array (index, length, mapWithIndex, null, snoc)
+import Data.Bifunctor (lmap)
 import Data.Either (Either, either)
 import Data.Generic.Rep (class Generic)
 import Data.Lens (Lens', lens, lens', (.~), (^.))
@@ -30,6 +34,8 @@ import Halogen.HTML.Events (onBlur, onClick, onValueChange)
 import Halogen.HTML.Properties (value)
 import Halogen.HTML.Properties as Properties
 
+type Output = Void
+type NoteAppM = H.HalogenM State Action () Output Aff
 type State = { notes :: Array Note
              , editingState :: EditingState
              }
@@ -114,12 +120,12 @@ type StorageId = { version :: String, id :: String }
 
 data Action = CreateNewNote
             | EditNoteTitle Int
-            | NoteTitleChanged Int Note String
-            | NoteContentChanged Int Note String
+            | NoteTitleChanged Int String
+            | NoteContentChanged Int String
             | EditDone
             | EditNoteContent Int
 
-component :: forall q o. H.Component q (Array Note) o Aff
+component :: forall q. H.Component q (Array Note) Output Aff
 component =
   H.mkComponent
     { initialState
@@ -133,11 +139,13 @@ initialState notes = { notes: notes, editingState: None }
 newNote :: Note
 newNote = NewNote { content: { title: "What's your new title?", noteContent: "What's your new content?" } }
 
+-- ==================================== RENDERING ===========================================
+
 render :: forall m. State -> H.ComponentHTML Action () m
 render state =
-  div [] 
+  div []
     [ section [classes "top-bar"] $
-        [ h1 [] [ text "FAVS" ] 
+        [ h1 [] [ text "FAVS" ]
         , nav [ classes "tabs" ] [ tab ]
         ]
     , section [ classes "notes" ]
@@ -166,78 +174,89 @@ noteRender editingState idx note =
 
 noteContentRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteContentRender (EditingNoteContent editIdx) idx note
-  | editIdx == idx = textarea [ onBlur (const EditDone), onValueChange  $ NoteContentChanged idx note, value (note ^. _noteContent) ]
+  | editIdx == idx = textarea [ onBlur (const EditDone), onValueChange  $ NoteContentChanged idx, value (note ^. _noteContent) ]
   | otherwise = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
 noteContentRender _ idx note = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
 
 noteTitleRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteTitleRender (EditingNoteTitle editIdx) idx note
-  | editIdx == idx = input [ onBlur (const EditDone), onValueChange  $ NoteTitleChanged idx note, value (note ^. _title)]
+  | editIdx == idx = input [ onBlur (const EditDone), onValueChange  $ NoteTitleChanged idx, value (note ^. _title)]
   | otherwise = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title)]
 noteTitleRender _ idx note = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title)]
 
-handleAction :: forall o. Action -> H.HalogenM State Action () o Aff Unit
+classes :: forall r i. String -> Properties.IProp (class :: String | r) i
+classes = Str.split (Str.Pattern " ") >>> (map wrap) >>> Properties.classes
+
+-- ============================= Action Handling =======================================
+
+handleAction :: Action -> NoteAppM Unit
 handleAction = case _ of
-  CreateNewNote -> 
-    H.modify_ \st -> st { notes = snoc st.notes (NewNote { content: { title: "What's your new content?", noteContent: "" } }) 
+  CreateNewNote ->
+    H.modify_ \st -> st { notes = snoc st.notes (NewNote { content: { title: "What's your new content?", noteContent: "" } })
                         , editingState = EditingNoteTitle (length st.notes)}
   EditNoteTitle idx ->
     modify_ \st -> st { editingState = EditingNoteTitle idx }
   EditNoteContent idx ->
     modify_ \st -> st { editingState = EditingNoteContent idx }
-  NoteTitleChanged idx note newTitle -> updateNoteWithSaveAndRefreshNotes _title idx note newTitle
-  NoteContentChanged idx note newContent -> updateNoteWithSaveAndRefreshNotes _noteContent idx note newContent
-  EditDone -> do 
+  NoteTitleChanged idx newTitle -> do
+    eitherRes <- runExceptT $ updateNoteWithSaveAndRefreshNotes idx _title newTitle
+    either logShow pure eitherRes
+  NoteContentChanged idx newContent -> do
+    eitherRes <- runExceptT $ updateNoteWithSaveAndRefreshNotes idx _noteContent newContent
+    either logShow pure eitherRes
+  EditDone -> do
     liftEffect $ log "Edit Done"
     modify_ \st -> st { editingState = None }
 
 
-updateNoteWithSaveAndRefreshNotes :: forall a o. Lens' Note a -> Int -> Note -> a -> H.HalogenM State Action () o Aff Unit
-updateNoteWithSaveAndRefreshNotes lens_ idx note newVal = do
+updateNoteWithSaveAndRefreshNotes :: forall a. Int -> Lens' Note a -> a -> ExceptT FatalError NoteAppM Unit
+updateNoteWithSaveAndRefreshNotes idx lens_ newVal = do
   oldNotes <- gets _.notes
-  liftEffect $ log "old notes gotten"
   let
     modifiedNote = index (snoc oldNotes newNote) idx >>= ((lens_ .~ newVal) >>> pure)
-  liftEffect $ log $ "New note: " <> show modifiedNote
-  maybe (log $ "Unable to modify note at index " <> show idx <> ": note cannot be found in model")
-        (case note of
-          NewNote _ -> postNote
-          ServerNote _ -> putNote)
+  maybe (throwError $ CustomFatalError "Unable to modify note at index ")
+        writeAndRefreshThenStopEditing
         modifiedNote
+  where
+    writeAndRefreshThenStopEditing :: Note -> ExceptT FatalError NoteAppM Unit
+    writeAndRefreshThenStopEditing note = do
+      resp <- writeToServer note
+      if unwrap resp.status >= 300 || unwrap resp.status < 200
+        then throwError $ CustomFatalError $ "Wrong status response for post note: " <> show resp.status
+        else do
+          newNotes <- getNotes
+          lift $ modify_ \st -> st { notes = newNotes }
+      lift $ modify_ \st -> st { editingState = None }
 
-checkStatusAndGetNotes :: forall o. Response Json -> H.HalogenM State Action () o Aff Unit
-checkStatusAndGetNotes resp = do
-  if unwrap resp.status >= 300 || unwrap resp.status < 200
-    then liftEffect $ log $ "Wrong status response for post note: " <> show resp.status
-    else do
-      notesResp <- liftAff $ get json "/api/note"
-      either handleError
-             (\notesjson -> do
-               either (liftEffect <<< logShow)
-                      (\newNotes -> modify_ \st -> st { notes = newNotes })
-                      notesjson)
-             (decodeJson <$> _.body <$> notesResp)                                                 
+getNotes :: ExceptT FatalError NoteAppM (Array Note)
+getNotes = do
+  jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ get json "/api/note"
+  (_.body >>> decodeJson >>> lmap toFatalError >>> pure >>> ExceptT) jsonResponse
 
-postNote :: forall o. Note -> H.HalogenM State Action () o Aff Unit
-postNote note = do
-    resp <- liftAff $ post json "/api/note" ((pure <<< Json <<< encodeJson) note)
-    either handleError
-           checkStatusAndGetNotes
-           resp -- /!\ errors in call are not handled here. We should handle all non 2XX responses
-    modify_ \st -> st { editingState = None }
+isCreate :: Note -> Boolean
+isCreate (NewNote _) = true
+isCreate (ServerNote _) = false
 
-putNote :: forall o. Note -> H.HalogenM State Action () o Aff Unit
-putNote note = do
-    resp <- liftAff $ put json "/api/note" ((pure <<< Json <<< encodeJson) note)
-    either handleError
-           checkStatusAndGetNotes
-           resp -- /!\ errors in call are not handled here. We should handle all non 2XX responses
-    modify_ \st -> st { editingState = None }
+writeToServer :: Note -> ExceptT FatalError NoteAppM (Response Json)
+writeToServer note = withExceptT toFatalError $ ExceptT $ liftAff $ writeFunc json "/api/note" ((pure <<< Json <<< encodeJson) note)
+  where
+    writeFunc = if isCreate note then post else put
 
-handleError :: forall o. Error -> H.HalogenM State Action () o Aff Unit
-handleError = liftAff <<< log <<< printError
+-- ====================== ERRORS ==============================================
+data FatalError = DecodeError JsonDecodeError
+                | NetworkError Error
+                | CustomFatalError String
 
-classes :: forall r i. String -> Properties.IProp (class :: String | r) i
-classes = Str.split (Str.Pattern " ") >>> (map wrap) >>> Properties.classes
+instance fatalErrorShowInstance :: Show FatalError where
+  show (DecodeError err) = "DecodeError: " <> show err
+  show (NetworkError err) = "NetworkError: " <> printError err
+  show (CustomFatalError err) = "CustomError: " <> err
 
-type FatalError = String
+instance jsonDecodeErrorToFatalErrorInstance :: ToFatalError JsonDecodeError where
+  toFatalError = DecodeError
+
+instance affjaxErrorToFatalErrorInstance :: ToFatalError Error where
+  toFatalError = NetworkError
+
+class ToFatalError a where
+  toFatalError :: a -> FatalError
