@@ -5,7 +5,7 @@ import Prelude hiding (div)
 import Affjax (Error, printError)
 import Affjax.RequestBody (RequestBody(..))
 import Affjax.ResponseFormat (json)
-import Affjax.Web (Response, get, post, put)
+import Affjax.Web (Response, delete, get, post, put)
 import Control.Monad.Error.Class (throwError)
 import Control.Monad.Except (ExceptT(..), runExceptT, withExceptT)
 import Control.Monad.RWS (gets, modify_)
@@ -26,7 +26,7 @@ import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Effect.Aff.Class (liftAff)
 import Effect.Class (liftEffect)
-import Effect.Class.Console (log, logShow)
+import Effect.Class.Console (logShow)
 import Foreign.Object (Object)
 import Halogen (Component, ComponentHTML, HalogenM, modify_, mkComponent, mkEval, defaultEval) as H
 import Halogen.HTML (HTML, button, div, h1, h2, input, li, nav, section, span, text, textarea)
@@ -124,6 +124,7 @@ data Action = CreateNewNote
             | NoteContentChanged Int String
             | EditDone
             | EditNoteContent Int
+            | DeleteNote StorageId
 
 component :: forall q. H.Component q (Array Note) Output Aff
 component =
@@ -149,7 +150,7 @@ render state =
         , nav [ classes "tabs" ] [ tab ]
         ]
     , section [ classes "notes" ]
-    (notesRender state.editingState (snoc state.notes newNote))
+    (notesRender state.editingState state.notes)
     , nav [ classes "bottom-bar" ]
         [ button [ classes "btn", onClick (\_ -> CreateNewNote) ] [ text "+" ] ]
     ]
@@ -167,10 +168,15 @@ noNotesDiv = [ div [] [ text "There are no notes to display" ] ]
 
 noteRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteRender editingState idx note =
-  li [ classes "note" ]
-    [ noteTitleRender editingState idx note
-    , noteContentRender editingState idx note
-    ]
+  li [ classes "note" ] $
+     [ noteTitleRender editingState idx note
+     , noteContentRender editingState idx note ]
+     <> noteFooterRender note
+
+noteFooterRender :: forall w. Note -> Array (HTML w Action)
+noteFooterRender (NewNote _) = []
+noteFooterRender (ServerNote { storageId }) =
+  [ button [ classes "delete-button", onClick (const $ DeleteNote storageId) ] [ text "Delete" ] ]
 
 noteContentRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteContentRender (EditingNoteContent editIdx) idx note
@@ -192,7 +198,7 @@ classes = Str.split (Str.Pattern " ") >>> (map wrap) >>> Properties.classes
 handleAction :: Action -> NoteAppM Unit
 handleAction = case _ of
   CreateNewNote ->
-    H.modify_ \st -> st { notes = snoc st.notes (NewNote { content: { title: "What's your new content?", noteContent: "" } })
+    H.modify_ \st -> st { notes = snoc st.notes (NewNote { content: { title: "What's your new title?", noteContent: "What's your new title?" } })
                         , editingState = EditingNoteTitle (length st.notes)}
   EditNoteTitle idx ->
     modify_ \st -> st { editingState = EditingNoteTitle idx }
@@ -205,10 +211,12 @@ handleAction = case _ of
     eitherRes <- runExceptT $ updateNoteWithSaveAndRefreshNotes idx _noteContent newContent
     either logShow pure eitherRes
   EditDone -> do
-    liftEffect $ log "Edit Done"
     modify_ \st -> st { editingState = None }
-
-
+  DeleteNote storageId -> do
+    eitherRes <- runExceptT $ do
+      deleteNote storageId
+      refreshNotes
+    either (liftEffect <<< logShow) (const $ pure unit) eitherRes
 updateNoteWithSaveAndRefreshNotes :: forall a. Int -> Lens' Note a -> a -> ExceptT FatalError NoteAppM Unit
 updateNoteWithSaveAndRefreshNotes idx lens_ newVal = do
   oldNotes <- gets _.notes
@@ -223,15 +231,25 @@ updateNoteWithSaveAndRefreshNotes idx lens_ newVal = do
       resp <- writeToServer note
       if unwrap resp.status >= 300 || unwrap resp.status < 200
         then throwError $ CustomFatalError $ "Wrong status response for post note: " <> show resp.status
-        else do
-          newNotes <- getNotes
-          lift $ modify_ \st -> st { notes = newNotes }
+        else refreshNotes
       lift $ modify_ \st -> st { editingState = None }
+
+refreshNotes :: ExceptT FatalError NoteAppM Unit
+refreshNotes = do
+  newNotes <- getNotes
+  lift $ modify_ \st -> st { notes = newNotes }
 
 getNotes :: ExceptT FatalError NoteAppM (Array Note)
 getNotes = do
   jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ get json "/api/note"
   (_.body >>> decodeJson >>> lmap toFatalError >>> pure >>> ExceptT) jsonResponse
+
+deleteNote :: StorageId -> ExceptT FatalError NoteAppM Unit
+deleteNote { id } = do
+  jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ delete json ("/api/note/" <> id)
+  if unwrap jsonResponse.status < 200 || unwrap jsonResponse.status >= 300
+    then (throwError $ CustomFatalError $ "Wrong status code when deleting note " <> id <> ": " <> show jsonResponse.status)
+    else pure unit
 
 isCreate :: Note -> Boolean
 isCreate (NewNote _) = true
