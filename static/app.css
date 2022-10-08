@@ -1,4 +1,4 @@
-html, body, main {
+/*html, body, main {
   margin: 0;
   height: 100%;
   width: 100%;
@@ -24,6 +24,19 @@ h6 {
 
 h1 {
   font-size: 2rem;
+}
+
+button {
+  background-color: white;
+  border: 1px solid black;
+}
+
+.container {
+  display: flex;
+}
+
+.items-centered {
+  justify-content: center;
 }
 
 .tabs {
@@ -123,3 +136,24 @@ h1 {
 .new-note > *:focus-visible {
   max-width: 75%;
 }
+
+/* This comes from https://codepen.io/sosuke/pen/Pjoqqp where the solution is desdcribed in
+ * https://stackoverflow.com/questions/42966641/how-to-transform-black-into-any-given-color-using-only-css-filters/43960991#43960991
+*/ 
+
+button.delete-button {
+  color: red;
+  border-color: red;
+  padding: .25rem .5rem;
+  font-size: .875rem;
+  line-height: 1.5;
+  border-radius: .2rem;
+  cursor: pointer;
+  transition: color .15s ease-in-out,background-color .15s ease-in-out,border-color .15s ease-in-out,box-shadow .15s ease-in-out;
+}
+
+button.delete-button:hover {
+  color: #fff;
+  background-color: red;
+}
+*/

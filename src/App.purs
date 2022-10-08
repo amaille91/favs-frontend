@@ -29,7 +29,7 @@ import Effect.Class (liftEffect)
 import Effect.Class.Console (logShow)
 import Foreign.Object (Object)
 import Halogen (Component, ComponentHTML, HalogenM, modify_, mkComponent, mkEval, defaultEval) as H
-import Halogen.HTML (HTML, button, div, h1, h2, input, li, nav, section, span, text, textarea)
+import Halogen.HTML (HTML, button, div, h1, h2, header, i, input, li, nav, section, span, text, textarea, ul)
 import Halogen.HTML.Events (onBlur, onClick, onValueChange)
 import Halogen.HTML.Properties (value)
 import Halogen.HTML.Properties as Properties
@@ -143,52 +143,61 @@ newNote = NewNote { content: { title: "What's your new title?", noteContent: "Wh
 -- ==================================== RENDERING ===========================================
 
 render :: forall m. State -> H.ComponentHTML Action () m
-render state =
-  div []
-    [ section [classes "top-bar"] $
-        [ h1 [] [ text "FAVS" ]
-        , nav [ classes "tabs" ] [ tab ]
-        ]
-    , section [ classes "notes" ]
-    (notesRender state.editingState state.notes)
-    , nav [ classes "bottom-bar" ]
-        [ button [ classes "btn", onClick (\_ -> CreateNewNote) ] [ text "+" ] ]
+render { notes, editingState } =
+  div [ classes "container" ]
+    [ h1 [ classes "row justify-content-center" ] [ text "FAVS" ]
+    , nav [ classes "row nav nav-tabs nav-fill" ] [ tab ]
+    , if (null notes) then noNotesDiv else ul [ classes "list-group" ] (mapWithIndex (noteRender editingState) notes)
+    , section [ classes "row" ]
+        [ button [ classes "btn btn-primary", onClick (\_ -> CreateNewNote) ] [ text "+" ] ]
     ]
 
 tab :: forall w i. HTML w i
 tab =
-  div [ classes "tab" ]
-      [ span [ classes "tab-link active" ] [ text "Notes" ] ]
+  div [ classes "nav-item px-0" ]
+      [ span [ classes "nav-link active" ] [ text "Notes" ] ]
 
-notesRender :: forall w. EditingState -> Array Note -> Array (HTML w Action)
-notesRender editingState notes = (if (null notes) then noNotesDiv else (mapWithIndex (noteRender editingState) notes))
-
-noNotesDiv :: forall w i. Array (HTML w i)
-noNotesDiv = [ div [] [ text "There are no notes to display" ] ]
+noNotesDiv :: forall w i. HTML w i
+noNotesDiv = div [ classes "row" ] [ text "There are no notes to display" ]
 
 noteRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteRender editingState idx note =
-  li [ classes "note" ] $
-     [ noteTitleRender editingState idx note
-     , noteContentRender editingState idx note ]
-     <> noteFooterRender note
+  li [ classes "row list-group-item" ] $
+     [ div [ classes "col" ] $
+       [ noteTitleRender editingState idx note
+       , noteContentRender editingState idx note ]
+       <> noteFooterRender note
+     ]
 
 noteFooterRender :: forall w. Note -> Array (HTML w Action)
 noteFooterRender (NewNote _) = []
 noteFooterRender (ServerNote { storageId }) =
-  [ button [ classes "delete-button", onClick (const $ DeleteNote storageId) ] [ text "Delete" ] ]
+  [ section [ classes "row my-2 justify-content-center" ]
+    [ button [ classes "btn btn-sm btn-outline-danger", onClick (const $ DeleteNote storageId) ]
+      [ i [ classes "bi bi-trash" ] [] ]  
+    ]
+  ]
 
 noteContentRender :: forall w. EditingState -> Int -> Note -> HTML w Action
-noteContentRender (EditingNoteContent editIdx) idx note
-  | editIdx == idx = textarea [ onBlur (const EditDone), onValueChange  $ NoteContentChanged idx, value (note ^. _noteContent) ]
-  | otherwise = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
-noteContentRender _ idx note = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
+noteContentRender editingState idx note =
+  section [ classes "row my-2" ] [ contentRender editingState ]
+  where
+    contentRender (EditingNoteContent editIdx)
+      | editIdx == idx = textarea [ classes "form-control", onBlur (const EditDone), onValueChange  $ NoteContentChanged idx, value (note ^. _noteContent) ]
+      | otherwise = defaultContentRender
+    contentRender _ = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
+    defaultContentRender = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
 
 noteTitleRender :: forall w. EditingState -> Int -> Note -> HTML w Action
-noteTitleRender (EditingNoteTitle editIdx) idx note
-  | editIdx == idx = input [ onBlur (const EditDone), onValueChange  $ NoteTitleChanged idx, value (note ^. _title)]
-  | otherwise = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title)]
-noteTitleRender _ idx note = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title)]
+noteTitleRender editingState idx note =
+  header [ classes "row my-2" ] [ contentRender editingState ]
+  where
+    contentRender (EditingNoteTitle editIdx)
+      | editIdx == idx = input [ classes "form-control", onBlur (const EditDone), onValueChange  $ NoteTitleChanged idx, value (note ^. _title)]
+      | otherwise = defaultTitleRender
+    contentRender _ = defaultTitleRender
+
+    defaultTitleRender = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title) ]
 
 classes :: forall r i. String -> Properties.IProp (class :: String | r) i
 classes = Str.split (Str.Pattern " ") >>> (map wrap) >>> Properties.classes
