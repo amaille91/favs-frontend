@@ -5,10 +5,12 @@ import Prelude hiding (div)
 import Affjax (Error, printError)
 import Affjax.RequestBody (RequestBody(..))
 import Affjax.ResponseFormat (json)
-import Affjax.Web (Response, delete, get, post, put)
-import Control.Monad.Error.Class (throwError)
+import Affjax.Web (Response, delete, post, put)
+import Affjax.Web (get) as Affjax
+import Control.Alt ((<|>))
+import Control.Monad.Error.Class (catchError, throwError)
 import Control.Monad.Except (ExceptT(..), runExceptT, withExceptT)
-import Control.Monad.RWS (gets, modify_)
+import Control.Monad.RWS (get, gets, modify_)
 import Control.Monad.Trans.Class (lift)
 import Data.Argonaut.Core (Json, jsonEmptyObject)
 import Data.Argonaut.Decode (class DecodeJson, JsonDecodeError, decodeJson, (.:))
@@ -17,6 +19,7 @@ import Data.Array (index, length, mapWithIndex, null, snoc)
 import Data.Bifunctor (lmap)
 import Data.Either (Either, either)
 import Data.Generic.Rep (class Generic)
+import Data.Int (floor, toNumber)
 import Data.Lens (Lens', lens, lens', (.~), (^.))
 import Data.Maybe (Maybe, maybe)
 import Data.Newtype (unwrap, wrap)
@@ -26,16 +29,25 @@ import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Effect.Aff.Class (liftAff)
 import Effect.Class (liftEffect)
-import Effect.Class.Console (logShow)
+import Effect.Class.Console (log, logShow)
 import Foreign.Object (Object)
-import Halogen (Component, ComponentHTML, HalogenM, modify_, mkComponent, mkEval, defaultEval) as H
+import Halogen (Component, ComponentHTML, HalogenM, defaultEval, getRef, mkComponent, mkEval, put) as H
 import Halogen.HTML (HTML, button, div, h1, h2, header, i, input, li, nav, section, span, text, textarea, ul)
 import Halogen.HTML.Events (onBlur, onClick, onValueChange)
-import Halogen.HTML.Properties (value)
+import Halogen.HTML.Properties (ref, value)
 import Halogen.HTML.Properties as Properties
+import Web.DOM (Element)
+import Web.DOM.Element (getBoundingClientRect, getElementsByClassName)
+import Web.DOM.HTMLCollection (item)
+import Web.HTML (window)
+import Web.HTML.HTMLElement (focus, fromElement) as HTMLElement
+import Web.HTML.HTMLInputElement (fromElement) as InputElement
+import Web.HTML.HTMLInputElement (select)
+import Web.HTML.Window (innerHeight, scroll)
 
 type Output = Void
 type NoteAppM = H.HalogenM State Action () Output Aff
+type ErrorNoteAppM = ExceptT FatalError NoteAppM
 type State = { notes :: Array Note
              , editingState :: EditingState
              }
@@ -150,6 +162,7 @@ render { notes, editingState } =
     , if (null notes) then noNotesDiv else ul [ classes "list-group" ] (mapWithIndex (noteRender editingState) notes)
     , section [ classes "row" ]
         [ button [ classes "btn btn-primary", onClick (\_ -> CreateNewNote) ] [ text "+" ] ]
+    , div [ classes "bottom-space" ] []
     ]
 
 tab :: forall w i. HTML w i
@@ -163,7 +176,7 @@ noNotesDiv = div [ classes "row" ] [ text "There are no notes to display" ]
 noteRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteRender editingState idx note =
   li [ classes "row list-group-item" ] $
-     [ div [ classes "col" ] $
+     [ div [ classes "col", ref (wrap $ "note-" <> show idx) ] $
        [ noteTitleRender editingState idx note
        , noteContentRender editingState idx note ]
        <> noteFooterRender note
@@ -183,21 +196,16 @@ noteContentRender editingState idx note =
   section [ classes "row my-2" ] [ contentRender editingState ]
   where
     contentRender (EditingNoteContent editIdx)
-      | editIdx == idx = textarea [ classes "form-control", onBlur (const EditDone), onValueChange  $ NoteContentChanged idx, value (note ^. _noteContent) ]
-      | otherwise = defaultContentRender
+      | editIdx == idx = textarea [ classes "form-control content-input", onBlur (const EditDone), onValueChange  $ NoteContentChanged idx, value (note ^. _noteContent) ]
     contentRender _ = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
-    defaultContentRender = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
 
 noteTitleRender :: forall w. EditingState -> Int -> Note -> HTML w Action
 noteTitleRender editingState idx note =
   header [ classes "row my-2" ] [ contentRender editingState ]
   where
     contentRender (EditingNoteTitle editIdx)
-      | editIdx == idx = input [ classes "form-control", onBlur (const EditDone), onValueChange  $ NoteTitleChanged idx, value (note ^. _title)]
-      | otherwise = defaultTitleRender
-    contentRender _ = defaultTitleRender
-
-    defaultTitleRender = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title) ]
+      | editIdx == idx = input [ classes "form-control fs-2 lh-2 title-input", onBlur (const EditDone), onValueChange  $ NoteTitleChanged idx, value (note ^. _title)]
+    contentRender _ = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title) ]
 
 classes :: forall r i. String -> Properties.IProp (class :: String | r) i
 classes = Str.split (Str.Pattern " ") >>> (map wrap) >>> Properties.classes
@@ -206,13 +214,20 @@ classes = Str.split (Str.Pattern " ") >>> (map wrap) >>> Properties.classes
 
 handleAction :: Action -> NoteAppM Unit
 handleAction = case _ of
-  CreateNewNote ->
-    H.modify_ \st -> st { notes = snoc st.notes (NewNote { content: { title: "What's your new title?", noteContent: "What's your new title?" } })
-                        , editingState = EditingNoteTitle (length st.notes)}
-  EditNoteTitle idx ->
+  CreateNewNote -> do
+    st <- get
+    H.put st { notes = snoc st.notes (NewNote { content: { title: "What's your new title?", noteContent: "What's your new title?" } })
+             , editingState = EditingNoteTitle (length st.notes)}
+    res <- runExceptT $ goInput (length st.notes)
+    either logShow pure res
+  EditNoteTitle idx -> do
     modify_ \st -> st { editingState = EditingNoteTitle idx }
-  EditNoteContent idx ->
+    res <- runExceptT $ goInput idx
+    either logShow pure res
+  EditNoteContent idx -> do
     modify_ \st -> st { editingState = EditingNoteContent idx }
+    res <- runExceptT $ goInput idx
+    either logShow pure res
   NoteTitleChanged idx newTitle -> do
     eitherRes <- runExceptT $ updateNoteWithSaveAndRefreshNotes idx _title newTitle
     either logShow pure eitherRes
@@ -226,7 +241,7 @@ handleAction = case _ of
       deleteNote storageId
       refreshNotes
     either (liftEffect <<< logShow) (const $ pure unit) eitherRes
-updateNoteWithSaveAndRefreshNotes :: forall a. Int -> Lens' Note a -> a -> ExceptT FatalError NoteAppM Unit
+updateNoteWithSaveAndRefreshNotes :: forall a. Int -> Lens' Note a -> a -> ErrorNoteAppM Unit
 updateNoteWithSaveAndRefreshNotes idx lens_ newVal = do
   oldNotes <- gets _.notes
   let
@@ -235,7 +250,7 @@ updateNoteWithSaveAndRefreshNotes idx lens_ newVal = do
         writeAndRefreshThenStopEditing
         modifiedNote
   where
-    writeAndRefreshThenStopEditing :: Note -> ExceptT FatalError NoteAppM Unit
+    writeAndRefreshThenStopEditing :: Note -> ErrorNoteAppM Unit
     writeAndRefreshThenStopEditing note = do
       resp <- writeToServer note
       if unwrap resp.status >= 300 || unwrap resp.status < 200
@@ -243,17 +258,34 @@ updateNoteWithSaveAndRefreshNotes idx lens_ newVal = do
         else refreshNotes
       lift $ modify_ \st -> st { editingState = None }
 
-refreshNotes :: ExceptT FatalError NoteAppM Unit
+goInput :: Int -> ErrorNoteAppM Unit
+goInput idx = do
+  noteElem <- getRef $ "note-" <> show idx
+  scrollTo noteElem
+  titleElem <- focusTitle noteElem
+  maybe (throwError $ CustomFatalError $ "unable to get input element from title element") (liftEffect <<< select) $ InputElement.fromElement titleElem
+
+scrollTo :: Element -> ErrorNoteAppM Unit
+scrollTo e = do
+  w <- liftEffect window
+  rect <- liftEffect $ getBoundingClientRect e
+  liftEffect $ log $ "client rect: " <> show rect.y
+  let elemMiddle = floor $ rect.y + rect.height / toNumber 2
+  vh <- liftEffect $ innerHeight w
+  liftEffect $ log $ "scrolling to " <> show (elemMiddle - vh / 2)
+  liftEffect $ scroll 0 (max 0 (elemMiddle - vh / 2)) w
+
+refreshNotes :: ErrorNoteAppM Unit
 refreshNotes = do
   newNotes <- getNotes
   lift $ modify_ \st -> st { notes = newNotes }
 
-getNotes :: ExceptT FatalError NoteAppM (Array Note)
+getNotes :: ErrorNoteAppM (Array Note)
 getNotes = do
-  jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ get json "/api/note"
+  jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ Affjax.get json "/api/note"
   (_.body >>> decodeJson >>> lmap toFatalError >>> pure >>> ExceptT) jsonResponse
 
-deleteNote :: StorageId -> ExceptT FatalError NoteAppM Unit
+deleteNote :: StorageId -> ErrorNoteAppM Unit
 deleteNote { id } = do
   jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ delete json ("/api/note/" <> id)
   if unwrap jsonResponse.status < 200 || unwrap jsonResponse.status >= 300
@@ -264,7 +296,7 @@ isCreate :: Note -> Boolean
 isCreate (NewNote _) = true
 isCreate (ServerNote _) = false
 
-writeToServer :: Note -> ExceptT FatalError NoteAppM (Response Json)
+writeToServer :: Note -> ErrorNoteAppM (Response Json)
 writeToServer note = withExceptT toFatalError $ ExceptT $ liftAff $ writeFunc json "/api/note" ((pure <<< Json <<< encodeJson) note)
   where
     writeFunc = if isCreate note then post else put
@@ -279,6 +311,9 @@ instance fatalErrorShowInstance :: Show FatalError where
   show (NetworkError err) = "NetworkError: " <> printError err
   show (CustomFatalError err) = "CustomError: " <> err
 
+instance fatalErrorSemigroupInstance :: Semigroup FatalError where
+  append _ last = last
+
 instance jsonDecodeErrorToFatalErrorInstance :: ToFatalError JsonDecodeError where
   toFatalError = DecodeError
 
@@ -287,3 +322,24 @@ instance affjaxErrorToFatalErrorInstance :: ToFatalError Error where
 
 class ToFatalError a where
   toFatalError :: a -> FatalError
+
+-- ============================  Web manipulation wrapper ==================================
+getRef :: String -> ErrorNoteAppM Element
+getRef refStr = do
+  ref <- lift $ H.getRef (wrap refStr) 
+  maybe (throwError $ CustomFatalError $ "cannot get ref " <> refStr) pure ref
+
+focusTitle :: Element -> ErrorNoteAppM Element
+focusTitle noteElem = do
+  title <- (getElementByClassName "title-input" noteElem) <|> (getElementByClassName "content-input" noteElem)
+  focusElement title
+  pure title
+
+getElementByClassName :: String -> Element -> ErrorNoteAppM Element
+getElementByClassName className element = do
+  title <- liftEffect $ getElementsByClassName className element >>= item 0
+  maybe (throwError $ CustomFatalError $ "unable to get note title") pure title
+
+focusElement :: Element -> ErrorNoteAppM Unit
+focusElement elem =
+  maybe (throwError $ CustomFatalError $ "cannot convert element to HTML element") liftEffect $ (HTMLElement.fromElement elem >>= (pure <<< HTMLElement.focus))

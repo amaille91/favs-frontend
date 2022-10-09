@@ -20,10 +20,12 @@ to generate this file without the comments in this block.
   , "arrays"
   , "bifunctors"
   , "console"
+  , "control"
   , "effect"
   , "either"
   , "foreign-object"
   , "halogen"
+  , "integers"
   , "maybe"
   , "newtype"
   , "prelude"
@@ -31,6 +33,8 @@ to generate this file without the comments in this block.
   , "strings"
   , "transformers"
   , "tuples"
+  , "web-dom"
+  , "web-html"
   ]
 , packages = ./packages.dhall
 , sources = [ "src/**/*.purs", "test/**/*.purs" ]
