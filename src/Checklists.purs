@@ -1,4 +1,4 @@
-module Notes (component) where
+module Checklists (component) where
 
 import Prelude hiding (div)
 
@@ -161,7 +161,7 @@ newNote = NewNote { content: { title: "What's your new title?", noteContent: "Wh
 render :: forall m. State -> H.ComponentHTML Action () m
 render { notes, editingState } =
   div []
-    [ if (null notes) then noNotesDiv else ul [ class_ "list-group" ] (mapWithIndex (noteRender editingState) notes)
+    [ h2 [] [ text "This is the checklist component" ]--if (null notes) then noNotesDiv else ul [ class_ "list-group" ] (mapWithIndex (noteRender editingState) notes)
     , section [ class_ "row" ]
         [ button [ class_ "btn btn-primary", onClick (const CreateNewNote) ] [ text "+" ] ]
     ]
