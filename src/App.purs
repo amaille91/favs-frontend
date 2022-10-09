@@ -130,7 +130,8 @@ type NoteContent = { noteContent :: String, title :: String }
 
 type StorageId = { version :: String, id :: String }
 
-data Action = CreateNewNote
+data Action = Initialize
+            | CreateNewNote
             | EditNoteTitle Int
             | NoteTitleChanged Int String
             | NoteContentChanged Int String
@@ -143,7 +144,9 @@ component =
   H.mkComponent
     { initialState
     , render
-    , eval: H.mkEval $ H.defaultEval { handleAction = handleAction }
+    , eval: H.mkEval $ H.defaultEval { handleAction = handleAction
+                                     , initialize = pure Initialize
+                                     }
     }
 
 initialState :: Array Note -> State
@@ -213,34 +216,32 @@ classes = Str.split (Str.Pattern " ") >>> (map wrap) >>> Properties.classes
 -- ============================= Action Handling =======================================
 
 handleAction :: Action -> NoteAppM Unit
-handleAction = case _ of
-  CreateNewNote -> do
-    st <- get
-    H.put st { notes = snoc st.notes (NewNote { content: { title: "What's your new title?", noteContent: "What's your new title?" } })
-             , editingState = EditingNoteTitle (length st.notes)}
-    res <- runExceptT $ goInput (length st.notes)
-    either logShow pure res
-  EditNoteTitle idx -> do
-    modify_ \st -> st { editingState = EditingNoteTitle idx }
-    res <- runExceptT $ goInput idx
-    either logShow pure res
-  EditNoteContent idx -> do
-    modify_ \st -> st { editingState = EditingNoteContent idx }
-    res <- runExceptT $ goInput idx
-    either logShow pure res
-  NoteTitleChanged idx newTitle -> do
-    eitherRes <- runExceptT $ updateNoteWithSaveAndRefreshNotes idx _title newTitle
-    either logShow pure eitherRes
-  NoteContentChanged idx newContent -> do
-    eitherRes <- runExceptT $ updateNoteWithSaveAndRefreshNotes idx _noteContent newContent
-    either logShow pure eitherRes
-  EditDone -> do
-    modify_ \st -> st { editingState = None }
-  DeleteNote storageId -> do
-    eitherRes <- runExceptT $ do
+handleAction action = handleError $
+  case action of
+    Initialize -> refreshNotes
+    CreateNewNote -> do
+      st <- get
+      H.put st { notes = snoc st.notes (NewNote { content: { title: "What's your new title?", noteContent: "What's your new title?" } })
+               , editingState = EditingNoteTitle (length st.notes)}
+      goInput (length st.notes)
+    EditNoteTitle idx -> do
+      modify_ \st -> st { editingState = EditingNoteTitle idx }
+      goInput idx
+    EditNoteContent idx -> do
+      modify_ \st -> st { editingState = EditingNoteContent idx }
+      goInput idx
+    NoteTitleChanged idx newTitle -> updateNoteWithSaveAndRefreshNotes idx _title newTitle
+    NoteContentChanged idx newContent -> updateNoteWithSaveAndRefreshNotes idx _noteContent newContent
+    EditDone -> modify_ \st -> st { editingState = None }
+    DeleteNote storageId -> do
       deleteNote storageId
       refreshNotes
-    either (liftEffect <<< logShow) (const $ pure unit) eitherRes
+
+handleError :: ErrorNoteAppM Unit -> NoteAppM Unit
+handleError m = do
+  res <- runExceptT m
+  either logShow pure res
+
 updateNoteWithSaveAndRefreshNotes :: forall a. Int -> Lens' Note a -> a -> ErrorNoteAppM Unit
 updateNoteWithSaveAndRefreshNotes idx lens_ newVal = do
   oldNotes <- gets _.notes
