@@ -12,6 +12,7 @@ import Control.Monad.Error.Class (throwError)
 import Control.Monad.Except (ExceptT(..), runExceptT, withExceptT)
 import Control.Monad.RWS (get, gets, modify_)
 import Control.Monad.Trans.Class (lift)
+import DOM.HTML.Indexed.InputType (InputType)
 import Data.Argonaut.Core (Json, jsonEmptyObject)
 import Data.Argonaut.Decode (class DecodeJson, JsonDecodeError, decodeJson, (.:))
 import Data.Argonaut.Encode (class EncodeJson, encodeJson, (:=), (~>))
@@ -20,7 +21,9 @@ import Data.Bifunctor (lmap)
 import Data.Either (Either, either)
 import Data.Generic.Rep (class Generic)
 import Data.Int (floor, toNumber)
-import Data.Lens (Lens', lens, lens', (.~), (^.))
+import Data.Lens (Lens', Traversal', _Just, lens, lens', view, (.~), (^.), (^..))
+import Data.Lens.At (at)
+import Data.Lens.Index (ix)
 import Data.Maybe (Maybe, maybe)
 import Data.Newtype (unwrap, wrap)
 import Data.Show.Generic (genericShow)
@@ -32,12 +35,14 @@ import Effect.Class (liftEffect)
 import Effect.Class.Console (log, logShow)
 import Foreign.Object (Object)
 import Halogen (Component, ComponentHTML, HalogenM, defaultEval, getRef, mkComponent, mkEval, put) as H
-import Halogen.HTML (HTML, button, div, h1, h2, header, i, input, li, nav, section, span, text, textarea, ul)
+import Halogen.HTML (HTML, button, div, h1, h2, header, i, input, li, nav, section, slot, span, text, textarea, ul)
 import Halogen.HTML.Events (onBlur, onClick, onValueChange)
-import Halogen.HTML.Properties (ref, value)
+import Halogen.HTML.Properties (ButtonType(..), InputType(..), ref, type_, value)
 import Halogen.HTML.Properties as Properties
+import Type.Prelude (Proxy(..))
 import Utils (class_)
 import Web.DOM (Element)
+import Web.DOM.Document (doctype)
 import Web.DOM.Element (getBoundingClientRect, getElementsByClassName)
 import Web.DOM.HTMLCollection (item)
 import Web.HTML (window)
@@ -47,76 +52,96 @@ import Web.HTML.HTMLInputElement (select)
 import Web.HTML.Window (innerHeight, scroll)
 
 type NoOutput = Void
-type NoteAppM = H.HalogenM State Action () NoOutput Aff
-type ErrorNoteAppM = ExceptT FatalError NoteAppM
-type State = { notes :: Array Note
+type ChecklistAppM = H.HalogenM State Action () NoOutput Aff
+type ErrorChecklistAppM = ExceptT FatalError ChecklistAppM
+type State = { checklists :: Array Checklist
              , editingState :: EditingState
              }
 
 data EditingState = None
-                  | EditingNoteTitle Int
-                  | EditingNoteContent Int
+                  | EditingChecklistName Int
+                  | EditingChecklistContent Int Int
 
-data Note = NewNote { content   :: NoteContent }
-          | ServerNote { content   :: NoteContent
+data Checklist = NewChecklist { content   :: ChecklistContent }
+          | ServerChecklist { content   :: ChecklistContent
                        , storageId :: StorageId }
 
-derive instance noteGenericInstance :: Generic Note _
-instance noteShowInstance :: Show Note where
+derive instance checklistGenericInstance :: Generic Checklist _
+instance checklistShowInstance :: Show Checklist where
   show = genericShow
 
-_content :: Lens' Note NoteContent
-_content = lens' $ (\note -> Tuple (getContent note) (setContent note))
+derive newtype instance checklistItemShowInstance :: Show ChecklistItem
+
+_content  :: Lens' Checklist ChecklistContent
+_content = lens' $ (\checklist -> Tuple (getContent checklist) (setContent checklist))
 
 
-getContent :: Note -> NoteContent
-getContent (NewNote n) = n.content
-getContent (ServerNote n) = n.content
+getContent :: Checklist -> ChecklistContent
+getContent (NewChecklist n) = n.content
+getContent (ServerChecklist n) = n.content
 
-setContent :: Note -> NoteContent -> Note
-setContent (NewNote _) newContent = NewNote { content: newContent }
-setContent (ServerNote n) newContent = ServerNote (n { content = newContent })
+setContent :: Checklist -> ChecklistContent -> Checklist
+setContent (NewChecklist _) newContent = NewChecklist { content: newContent }
+setContent (ServerChecklist n) newContent = ServerChecklist (n { content = newContent })
 
-_title :: Lens' Note String
-_title = _content <<< (lens _.title $ _ { title = _ })
+_name :: Lens' Checklist String
+_name = _content <<< (lens _.name $ _ { name = _ })
 
-_noteContent :: Lens' Note String
-_noteContent = _content <<< (lens _.noteContent $ _ { noteContent = _ })
+_checklistItems :: Lens' Checklist (Array ChecklistItem)
+_checklistItems = _content <<< (lens _.items $ _ { items = _ })
 
-instance noteDecodeJsonInstance :: DecodeJson Note where
-  decodeJson :: Json -> Either JsonDecodeError Note
+_label :: Lens' ChecklistItem String
+_label = lens' $ (\(ChecklistItem { label, checked }) -> Tuple label (\newLabel -> ChecklistItem { label: newLabel, checked: checked }))
+
+instance checklistDecodeJsonInstance :: DecodeJson Checklist where
+  decodeJson :: Json -> Either JsonDecodeError Checklist
   decodeJson json = do
     dec <- decodeJson json
     content <- dec .: "content"
-    title <- content .: "title"
-    noteContent <- content .: "noteContent"
-    either (const $ pure $ NewNote { content: { title: title, noteContent: noteContent } })
-           (decodeServerNote title noteContent)
+    name <- content .: "name"
+    items <- content .: "items"
+    either (const $ pure $ NewChecklist { content: { name: name, items: items } })
+           (decodeServerChecklist name items)
            (dec .: "storageId")
     where
-      decodeServerNote :: String -> String -> Object Json -> Either JsonDecodeError Note
-      decodeServerNote title noteContent storageIdObj = do
+      decodeServerChecklist :: String -> Array ChecklistItem -> Object Json -> Either JsonDecodeError Checklist
+      decodeServerChecklist name items storageIdObj = do
         version <- storageIdObj .: "version"
         id <- storageIdObj .: "id"
-        pure $ ServerNote { content: { title: title, noteContent: noteContent }
+        pure $ ServerChecklist { content: { name: name, items: items }
                           , storageId: { version: version, id: id }}
 
-instance noteEncodeJson :: EncodeJson Note where
-  encodeJson :: Note -> Json
-  encodeJson (NewNote { content: { title, noteContent } }) =
-    encodeContentObj title noteContent
-  encodeJson (ServerNote { content: { title, noteContent }, storageId: { version, id }}) =
+instance checklistEncodeJson :: EncodeJson Checklist where
+  encodeJson :: Checklist -> Json
+  encodeJson (NewChecklist { content: checklistContent }) =
+    encodeContentObj checklistContent
+  encodeJson (ServerChecklist { content: checklistContent, storageId: { version, id }}) =
     cont ~> storage ~> jsonEmptyObject
     where
       cont :: Tuple String Json
-      cont = "content" := encodeContentObj title noteContent
+      cont = "content" := encodeContentObj checklistContent
       storage :: Tuple String Json
       storage = "storageId" := encodeStorageIdObj id version
 
-encodeContentObj :: String -> String -> Json
-encodeContentObj title noteContent =
-  "title" := title
-    ~> "noteContent" := noteContent
+instance checklistItemEncodeJson :: EncodeJson ChecklistItem where
+  encodeJson :: ChecklistItem -> Json
+  encodeJson (ChecklistItem { label, checked }) = 
+    "label" := label
+      ~> "checked" := checked
+      ~> jsonEmptyObject
+
+instance checklistItemDecodeJson :: DecodeJson ChecklistItem where
+  decodeJson :: Json -> Either JsonDecodeError ChecklistItem 
+  decodeJson json = do
+    dec <- decodeJson json
+    label <- dec .: "label"
+    checked <- dec .: "checked"
+    pure $ ChecklistItem { label: label, checked: checked }
+
+encodeContentObj :: ChecklistContent -> Json
+encodeContentObj { name, items } =
+  "name" := name
+    ~> "items" := items
     ~> jsonEmptyObject
 
 encodeStorageIdObj :: String -> String -> Json
@@ -125,20 +150,28 @@ encodeStorageIdObj id version =
     ~> "version" := version
     ~> jsonEmptyObject
 
-type NoteId = Maybe { version :: String, id :: String }
-             -- ^ The Nothing value represents the id of the NewNote
-type NoteContent = { noteContent :: String, title :: String }
+type ChecklistId = Maybe { version :: String, id :: String }
+             -- ^ The Nothing value represents the id of the NewChecklist
+type ChecklistContent = { name  :: String
+                        , items :: Array ChecklistItem
+                        }
+
+newtype ChecklistItem = ChecklistItem { label   :: String
+                                      , checked :: Boolean
+                                      }
+
 
 type StorageId = { version :: String, id :: String }
 
 data Action = Initialize
-            | CreateNewNote
-            | EditNoteTitle Int
-            | NoteTitleChanged Int String
-            | NoteContentChanged Int String
+            | CreateNewChecklist
+            | EditChecklistName Int
+            | ChecklistNameChanged Int String
+            | ChecklistLabelChanged Int Int String
             | EditDone
-            | EditNoteContent Int
-            | DeleteNote StorageId
+            | EditLabelContent Int Int
+            | DeleteChecklist StorageId
+            | DeleteChecklistItem Int Int
 
 component :: forall q i. H.Component q i NoOutput Aff
 component =
@@ -151,112 +184,131 @@ component =
     }
 
 initialState :: forall i. i -> State
-initialState = const { notes: [], editingState: None }
+initialState = const { checklists: [], editingState: None }
 
-newNote :: Note
-newNote = NewNote { content: { title: "What's your new title?", noteContent: "What's your new content?" } }
+newChecklist :: Checklist
+newChecklist = NewChecklist { content: { name: "What's your new name?", items: [ ChecklistItem { label: "What's your new label?"
+                                                                                               , checked: false } ] } }
 
 -- ==================================== RENDERING ===========================================
 
 render :: forall m. State -> H.ComponentHTML Action () m
-render { notes, editingState } =
+render { checklists, editingState } =
   div []
-    [ h2 [] [ text "This is the checklist component" ]--if (null notes) then noNotesDiv else ul [ class_ "list-group" ] (mapWithIndex (noteRender editingState) notes)
+    [ if (null checklists) then noChecklistsDiv else ul [ class_ "list-group" ] (mapWithIndex (checklistRender editingState) checklists)
     , section [ class_ "row" ]
-        [ button [ class_ "btn btn-primary", onClick (const CreateNewNote) ] [ text "+" ] ]
+        [ button [ class_ "btn btn-primary", onClick (const CreateNewChecklist) ] [ text "+" ] ]
     ]
 
-noNotesDiv :: forall w i. HTML w i
-noNotesDiv = div [ class_ "row" ] [ text "There are no notes to display" ]
+noChecklistsDiv :: forall w i. HTML w i
+noChecklistsDiv = div [ class_ "row" ] [ text "There are no checklists to display" ]
 
-noteRender :: forall w. EditingState -> Int -> Note -> HTML w Action
-noteRender editingState idx note =
+checklistRender :: forall w. EditingState -> Int -> Checklist -> HTML w Action
+checklistRender editingState idx checklist =
   li [ class_ "row list-group-item" ] $
-     [ div [ class_ "col", ref (wrap $ "note-" <> show idx) ] $
-       [ noteTitleRender editingState idx note
-       , noteContentRender editingState idx note ]
-       <> noteFooterRender note
+     [ div [ class_ "col", ref (wrap $ "checklist-" <> show idx) ] $
+       [ checklistNameRender editingState idx (checklist ^. _name)
+       , checklistContentRender editingState idx (checklist ^. _content) ]
+       <> checklistFooterRender checklist
      ]
 
-noteFooterRender :: forall w. Note -> Array (HTML w Action)
-noteFooterRender (NewNote _) = []
-noteFooterRender (ServerNote { storageId }) =
+checklistFooterRender :: forall w. Checklist -> Array (HTML w Action)
+checklistFooterRender (NewChecklist _) = []
+checklistFooterRender (ServerChecklist { storageId }) =
   [ section [ class_ "row my-2 justify-content-center" ]
-    [ button [ class_ "btn btn-sm btn-outline-danger", onClick (const $ DeleteNote storageId) ]
+    [ button [ class_ "btn btn-sm btn-outline-danger", onClick (const $ DeleteChecklist storageId) ]
       [ i [ class_ "bi bi-trash" ] [] ]  
     ]
   ]
 
-noteContentRender :: forall w. EditingState -> Int -> Note -> HTML w Action
-noteContentRender editingState idx note =
-  section [ class_ "row my-2" ] [ contentRender editingState ]
-  where
-    contentRender (EditingNoteContent editIdx)
-      | editIdx == idx = textarea [ class_ "form-control content-input", onBlur (const EditDone), onValueChange  $ NoteContentChanged idx, value (note ^. _noteContent) ]
-    contentRender _ = div [ onClick (const $ EditNoteContent idx) ] [ text (note ^. _noteContent) ]
+checklistContentRender :: forall w. EditingState -> Int -> ChecklistContent -> HTML w Action
+checklistContentRender (EditingChecklistContent checklistIdx itemIdx) idx checklist
+  | checklistIdx == idx = ul [ class_ "list-group" ] $ mapWithIndex (editChecklistItemRender itemIdx checklistIdx) checklist.items
+checklistContentRender _ idx checklist = ul [ class_ "list-group" ] $ mapWithIndex (simpleChecklistItemRender idx) checklist.items
 
-noteTitleRender :: forall w. EditingState -> Int -> Note -> HTML w Action
-noteTitleRender editingState idx note =
+simpleChecklistItemRender :: forall w. Int -> Int -> ChecklistItem -> HTML w Action
+simpleChecklistItemRender checklistIdx itemIdx (ChecklistItem { label, checked }) =
+  li [ class_ "list-group-item border-0", onClick (const $ EditLabelContent checklistIdx itemIdx) ]
+    [  span [] [ text label ]
+    , button [ type_ ButtonButton, class_ "btn btn-sm btn-danger", onClick (const $ DeleteChecklistItem checklistIdx itemIdx) ] [ i [ class_ "bi bi-trash" ] [] ]
+    ]
+
+editChecklistItemRender :: forall w. Int -> Int -> Int -> ChecklistItem -> HTML w Action 
+editChecklistItemRender editIdx currentIdx currentChecklistIdx (ChecklistItem { label, checked }) =
+  li [ class_ "list-group-item border-0" ] [ input [ class_ "form-control label-input", onBlur (const EditDone), onValueChange  $ ChecklistLabelChanged currentChecklistIdx currentIdx, value label] ]
+
+checklistNameRender :: forall w. EditingState -> Int -> String -> HTML w Action
+checklistNameRender editingState idx name =
   header [ class_ "row my-2" ] [ contentRender editingState ]
   where
-    contentRender (EditingNoteTitle editIdx)
-      | editIdx == idx = input [ class_ "form-control fs-2 lh-2 title-input", onBlur (const EditDone), onValueChange  $ NoteTitleChanged idx, value (note ^. _title)]
-    contentRender _ = h2  [ onClick (const $ EditNoteTitle idx) ] [ text (note ^. _title) ]
+    contentRender (EditingChecklistName editIdx)
+      | editIdx == idx = input [ class_ "form-control fs-2 lh-2 name-input", onBlur (const EditDone), onValueChange  $ ChecklistNameChanged idx, value name]
+    contentRender _ = h2  [ onClick (const $ EditChecklistName idx) ] [ text name ]
 
 -- ============================= Action Handling =======================================
 
-handleAction :: Action -> NoteAppM Unit
+handleAction :: Action -> ChecklistAppM Unit
 handleAction action = handleError $
   case action of
-    Initialize -> refreshNotes
-    CreateNewNote -> do
+    Initialize -> refreshChecklists
+    CreateNewChecklist -> do
       st <- get
-      H.put st { notes = snoc st.notes (NewNote { content: { title: "What's your new title?", noteContent: "What's your new title?" } })
-               , editingState = EditingNoteTitle (length st.notes)}
-      goInput (length st.notes)
-    EditNoteTitle idx -> do
-      modify_ \st -> st { editingState = EditingNoteTitle idx }
+      H.put st { checklists = snoc st.checklists (NewChecklist { content: { name: "What's your new name?", items: [ChecklistItem { label: "What's your new name?", checked: false }] } })
+               , editingState = EditingChecklistName (length st.checklists)}
+      goInput (length st.checklists)
+    EditChecklistName idx -> do
+      modify_ \st -> st { editingState = EditingChecklistName idx }
       goInput idx
-    EditNoteContent idx -> do
-      modify_ \st -> st { editingState = EditingNoteContent idx }
-      goInput idx
-    NoteTitleChanged idx newTitle -> updateNoteWithSaveAndRefreshNotes idx _title newTitle
-    NoteContentChanged idx newContent -> updateNoteWithSaveAndRefreshNotes idx _noteContent newContent
+    EditLabelContent checklistIdx itemIdx -> do
+      modify_ \st -> st { editingState = EditingChecklistContent checklistIdx itemIdx }
+      goInput checklistIdx
+    ChecklistNameChanged idx newTitle -> updateChecklistWithSaveAndRefreshChecklists idx _name newTitle
+    ChecklistLabelChanged checklistIdx itemIdx newLabel -> updateChecklistWithSaveAndRefreshChecklists checklistIdx (_checklistItems <<< ix itemIdx <<< _label) newLabel
     EditDone -> modify_ \st -> st { editingState = None }
-    DeleteNote storageId -> do
-      deleteNote storageId
-      refreshNotes
+    DeleteChecklist storageId -> do
+      deleteChecklist storageId
+      refreshChecklists
+    DeleteChecklistItem checklistIdx itemIdx -> do
+      checklists <- gets _.cheklists
+      let retrievedChecklists = checklists ^.. ix checklistIdx 
+      maybe (throwError $ CustomFatalError "Unable to retrieve checklist at index " <> show checklistIdx <> " while trying to delete one of its items")
+            (deleteChecklistItem checklist itemIdx >>= (\_ -> refreshChecklists))
+            retrievedChecklist
 
-handleError :: ErrorNoteAppM Unit -> NoteAppM Unit
+
+handleError :: ErrorChecklistAppM Unit -> ChecklistAppM Unit
 handleError m = do
   res <- runExceptT m
   either logShow pure res
 
-updateNoteWithSaveAndRefreshNotes :: forall a. Int -> Lens' Note a -> a -> ErrorNoteAppM Unit
-updateNoteWithSaveAndRefreshNotes idx lens_ newVal = do
-  oldNotes <- gets _.notes
+deleteChecklistItem :: Checklist -> Int -> ErrorChecklistAppM ()
+deleteChecklistItem (ServerChecklist { content })
+
+updateChecklistWithSaveAndRefreshChecklists :: forall a. Int -> Traversal' Checklist a -> a -> ErrorChecklistAppM Unit
+updateChecklistWithSaveAndRefreshChecklists idx lens_ newVal = do
+  oldChecklists <- gets _.checklists
   let
-    modifiedNote = index (snoc oldNotes newNote) idx >>= ((lens_ .~ newVal) >>> pure)
-  maybe (throwError $ CustomFatalError "Unable to modify note at index ")
+    modifiedChecklist = index (snoc oldChecklists newChecklist) idx >>= ((lens_ .~ newVal) >>> pure)
+  maybe (throwError $ CustomFatalError "Unable to modify checklist at index ")
         writeAndRefreshThenStopEditing
-        modifiedNote
+        modifiedChecklist
   where
-    writeAndRefreshThenStopEditing :: Note -> ErrorNoteAppM Unit
-    writeAndRefreshThenStopEditing note = do
-      resp <- writeToServer note
+    writeAndRefreshThenStopEditing :: Checklist -> ErrorChecklistAppM Unit
+    writeAndRefreshThenStopEditing checklist = do
+      resp <- writeToServer checklist
       if unwrap resp.status >= 300 || unwrap resp.status < 200
-        then throwError $ CustomFatalError $ "Wrong status response for post note: " <> show resp.status
-        else refreshNotes
+        then throwError $ CustomFatalError $ "Wrong status response for post checklist: " <> show resp.status
+        else refreshChecklists
       lift $ modify_ \st -> st { editingState = None }
 
-goInput :: Int -> ErrorNoteAppM Unit
+goInput :: Int -> ErrorChecklistAppM Unit
 goInput idx = do
-  noteElem <- getRef $ "note-" <> show idx
-  scrollTo noteElem
-  titleElem <- focusTitle noteElem
-  maybe (throwError $ CustomFatalError $ "unable to get input element from title element") (liftEffect <<< select) $ InputElement.fromElement titleElem
+  checklistElem <- getRef $ "checklist-" <> show idx
+  scrollTo checklistElem
+  nameElem <- focusName checklistElem
+  maybe (throwError $ CustomFatalError $ "unable to get input element from name element") (liftEffect <<< select) $ InputElement.fromElement nameElem
 
-scrollTo :: Element -> ErrorNoteAppM Unit
+scrollTo :: Element -> ErrorChecklistAppM Unit
 scrollTo e = do
   w <- liftEffect window
   rect <- liftEffect $ getBoundingClientRect e
@@ -266,31 +318,31 @@ scrollTo e = do
   liftEffect $ log $ "scrolling to " <> show (elemMiddle - vh / 2)
   liftEffect $ scroll 0 (max 0 (elemMiddle - vh / 2)) w
 
-refreshNotes :: ErrorNoteAppM Unit
-refreshNotes = do
-  newNotes <- getNotes
-  lift $ modify_ \st -> st { notes = newNotes }
+refreshChecklists :: ErrorChecklistAppM Unit
+refreshChecklists = do
+  newChecklists <- getChecklists
+  lift $ modify_ \st -> st { checklists = newChecklists }
 
-getNotes :: ErrorNoteAppM (Array Note)
-getNotes = do
-  jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ Affjax.get json "/api/note"
+getChecklists :: ErrorChecklistAppM (Array Checklist)
+getChecklists = do
+  jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ Affjax.get json "/api/checklist"
   (_.body >>> decodeJson >>> lmap toFatalError >>> pure >>> ExceptT) jsonResponse
 
-deleteNote :: StorageId -> ErrorNoteAppM Unit
-deleteNote { id } = do
-  jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ delete json ("/api/note/" <> id)
+deleteChecklist :: StorageId -> ErrorChecklistAppM Unit
+deleteChecklist { id } = do
+  jsonResponse <- withExceptT toFatalError $ ExceptT $ liftAff $ delete json ("/api/checklist/" <> id)
   if unwrap jsonResponse.status < 200 || unwrap jsonResponse.status >= 300
-    then (throwError $ CustomFatalError $ "Wrong status code when deleting note " <> id <> ": " <> show jsonResponse.status)
+    then (throwError $ CustomFatalError $ "Wrong status code when deleting checklist " <> id <> ": " <> show jsonResponse.status)
     else pure unit
 
-isCreate :: Note -> Boolean
-isCreate (NewNote _) = true
-isCreate (ServerNote _) = false
+isCreate :: Checklist -> Boolean
+isCreate (NewChecklist _) = true
+isCreate (ServerChecklist _) = false
 
-writeToServer :: Note -> ErrorNoteAppM (Response Json)
-writeToServer note = withExceptT toFatalError $ ExceptT $ liftAff $ writeFunc json "/api/note" ((pure <<< Json <<< encodeJson) note)
+writeToServer :: Checklist -> ErrorChecklistAppM (Response Json)
+writeToServer checklist = withExceptT toFatalError $ ExceptT $ liftAff $ writeFunc json "/api/checklist" ((pure <<< Json <<< encodeJson) checklist)
   where
-    writeFunc = if isCreate note then post else put
+    writeFunc = if isCreate checklist then post else put
 
 -- ====================== ERRORS ==============================================
 data FatalError = DecodeError JsonDecodeError
@@ -315,22 +367,22 @@ class ToFatalError a where
   toFatalError :: a -> FatalError
 
 -- ============================  Web manipulation wrapper ==================================
-getRef :: String -> ErrorNoteAppM Element
+getRef :: String -> ErrorChecklistAppM Element
 getRef refStr = do
   ref <- lift $ H.getRef (wrap refStr) 
   maybe (throwError $ CustomFatalError $ "cannot get ref " <> refStr) pure ref
 
-focusTitle :: Element -> ErrorNoteAppM Element
-focusTitle noteElem = do
-  title <- (getElementByClassName "title-input" noteElem) <|> (getElementByClassName "content-input" noteElem)
-  focusElement title
-  pure title
+focusName :: Element -> ErrorChecklistAppM Element
+focusName checklistElem = do
+  name <- (getElementByClassName "name-input" checklistElem) <|> (getElementByClassName "content-input" checklistElem)
+  focusElement name
+  pure name
 
-getElementByClassName :: String -> Element -> ErrorNoteAppM Element
+getElementByClassName :: String -> Element -> ErrorChecklistAppM Element
 getElementByClassName className element = do
-  title <- liftEffect $ getElementsByClassName className element >>= item 0
-  maybe (throwError $ CustomFatalError $ "unable to get note title") pure title
+  name <- liftEffect $ getElementsByClassName className element >>= item 0
+  maybe (throwError $ CustomFatalError $ "unable to get checklist name") pure name
 
-focusElement :: Element -> ErrorNoteAppM Unit
+focusElement :: Element -> ErrorChecklistAppM Unit
 focusElement elem =
   maybe (throwError $ CustomFatalError $ "cannot convert element to HTML element") liftEffect $ (HTMLElement.fromElement elem >>= (pure <<< HTMLElement.focus))

@@ -6,3 +6,7 @@ input.title-input {
   font-weight: 500;
   line-height: 1.2;
 }
+
+.nav-item {
+  cursor: pointer;
+}
