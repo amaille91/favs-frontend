@@ -2,18 +2,29 @@ module App (component) where
 
 import Prelude hiding (div, (/), otherwise)
 
+import Affjax.Web (Response, post, Error)
+import Affjax.RequestBody (RequestBody(..))
+import Affjax.ResponseFormat (json)
 import Checklists (component) as Checklists
-import Control.Monad.RWS (modify_)
+import Control.Monad.RWS (get, modify_)
+import DOM.HTML.Indexed.ButtonType (ButtonType(..))
+import DOM.HTML.Indexed.InputType (InputType(..))
+import Data.Argonaut.Core (Json, jsonEmptyObject)
+import Data.Argonaut.Decode (decodeJson)
+import Data.Argonaut.Encode (class EncodeJson, encodeJson, (:=), (~>))
 import Data.Either (Either(..), either)
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
 import Effect.Aff (Aff)
+import Effect.Aff.Class (liftAff)
 import Effect.Class (class MonadEffect)
+import Effect.Console (logShow)
 import Halogen (Component, HalogenM, Slot, ComponentHTML, defaultEval, mkComponent, mkEval) as H
 import Halogen (HalogenM, liftEffect, subscribe)
-import Halogen.HTML (HTML, a, div, h1, nav, slot_, text)
-import Halogen.HTML.Events (onClick)
+import Halogen.HTML (HTML, a, div, h1, nav, slot_, text, form, label, input, button)
+import Halogen.HTML.Events (onClick, onValueChange)
+import Halogen.HTML.Properties (for, type_, name, placeholder)
 import Halogen.Subscription (create, notify)
 import Notes (component) as Notes
 import Routing.Duplex (RouteDuplex', root, parse)
@@ -22,6 +33,8 @@ import Routing.Duplex.Generic.Syntax ((/))
 import Routing.Hash (matchesWith)
 import Type.Prelude (Proxy(..))
 import Utils (class_)
+import Web.Event.Event (Event, preventDefault)
+import Web.UIEvent.MouseEvent as MouseEvent
 
 type OpaqueSlot slot = forall query. H.Slot query Void slot
 type ChildSlots = ( notes :: OpaqueSlot Unit
@@ -84,11 +97,11 @@ handleAction InitializeRouting = subscribeToRouting
 render :: State -> H.ComponentHTML Action ChildSlots Aff
 render (CurrentRoute (Route route)) =
   div [ class_ "container" ]
-    [ h1 [ class_ "text-center" ] [ text "FAVS" ]
-    , nav [ class_ "row nav nav-tabs" ] [ tab Note route, tab Checklist route ]
-    , currentComponent route
-    , div [ class_ "bottom-space" ] []
-    ]
+  ([ h1 [ class_ "text-center" ] [ text "FAVS" ]] <>
+  (if route /= Signup then [ nav [ class_ "row nav nav-tabs" ] [ tab "Notes" (route == Note), tab "Checklists" (route == Checklist)] ] else []) <>
+  [ currentComponent route
+  , div [ class_ "bottom-space" ] []
+  ])
 render (CurrentRoute NotFound) = text "Not Found"
 
 currentComponent :: DefinedRoute -> H.ComponentHTML Action ChildSlots Aff
@@ -110,12 +123,20 @@ tabLabel Note = "Notes"
 tabLabel Checklist = "Checklists"
 tabLabel Signup = "Signup"
 
-data SignupAction = SignupInitialize
+data SignupAction = SignupInitialize | Submit Event | UsernameChanged String | PasswordChanged String
 type NoOutput = Void
-type SignupState = Unit
+newtype SignupFormData = SignupFormData SignupState
+type SignupState = { username :: String, password :: String }
+
+instance signupFormDataEncodeJson :: EncodeJson SignupFormData where
+  encodeJson :: SignupFormData -> Json
+  encodeJson (SignupFormData {username, password}) = uname ~> pass ~> jsonEmptyObject
+    where uname = "username" := username
+          pass = "password" := password
 
 signupInitialState :: SignupState
-signupInitialState = unit
+signupInitialState = { username: "", password: "" }
+
 signupComponent :: forall q i. H.Component q i NoOutput Aff
 signupComponent = H.mkComponent { initialState: const signupInitialState
                                 , render: signupRender
@@ -123,9 +144,39 @@ signupComponent = H.mkComponent { initialState: const signupInitialState
                                                                  , initialize = pure SignupInitialize
                                                                  }
                                 }
+--(\err -> liftEffect (logShow "Error while trying to signup") >>= const $ pure unit)
+--(\r -> liftEffect (logShow r) >>= const $ pure unit)
+handleError :: Error -> HalogenM SignupState SignupAction () NoOutput Aff Unit
+handleError _ = do
+  liftEffect (logShow "Error while trying to signup")
+  pure unit
+
+handleResponse :: Response Json -> HalogenM SignupState SignupAction () NoOutput Aff Unit
+handleResponse r = do
+  let decoded :: Either _ String
+      decoded = decodeJson r.body
+  liftEffect (logShow decoded)
+  pure unit
 
 signupHandleAction :: SignupAction -> HalogenM SignupState SignupAction () NoOutput Aff Unit
+signupHandleAction (Submit e) = do
+  liftEffect $ preventDefault e
+  liftEffect $ logShow "Submission clicked"
+  formData <- get
+  resp <- liftAff $ post json "/api/signup" $ Just $ Json $ encodeJson $ SignupFormData formData
+  either handleError handleResponse resp
+signupHandleAction (UsernameChanged newUsername) = do
+  liftEffect $ logShow ("New username: " <> newUsername)
+  modify_ $ _ { username = newUsername }
+signupHandleAction (PasswordChanged newPassword) = do
+  liftEffect $ logShow ("New Password: " <> newPassword)
+  modify_ $ _ { password = newPassword }
 signupHandleAction _ = pure unit
 
 signupRender :: forall m. SignupState -> H.ComponentHTML SignupAction () m
-signupRender _ = div [] [text "This is the Signup form"]
+signupRender _ =
+  form [] [ label [for "username"] [text "Username"]
+  , input [type_ InputText, name "username", placeholder "Enter username", onValueChange UsernameChanged ]
+          , label [for "password"] [text "Password"]
+          , input [type_ InputPassword, name "password", placeholder "Enter password", onValueChange PasswordChanged]
+          , button [ type_ ButtonSubmit, onClick (\e -> Submit (MouseEvent.toEvent e)) ] [text "Submit"]]
