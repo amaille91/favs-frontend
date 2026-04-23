@@ -1,8 +1,8 @@
-module Main where
+module Main (main, logError) where
 
 import Prelude
 
-import App (component) as App
+import Pages.App (component) as App
 import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
@@ -17,4 +17,3 @@ main = HA.runHalogenAff do
 
 logError :: forall a. Show a => a -> Aff Unit
 logError = liftEffect <<< logShow
-
